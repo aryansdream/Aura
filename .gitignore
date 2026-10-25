@@ -1,0 +1,12 @@
+# Dependencies and generated output
+node_modules/
+dist/
+
+# Local credentials and platform configuration
+.env*
+.vercel/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/

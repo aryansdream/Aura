@@ -1,0 +1,14 @@
+{
+  "name": "aura-day-tracker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.2.0"
+  },
+  "devDependencies": {
+    "vite": "^7.1.7"
+  }
+}
