@@ -58,10 +58,12 @@ object ClassReminderScheduler {
         val intervalMinutes = entry.optInt("reminderIntervalMinutes", 0).coerceAtLeast(0)
         val zone = ZoneId.systemDefault()
         val now = java.time.ZonedDateTime.now(zone)
-        val trigger = (0L..7L).firstNotNullOfOrNull { offset ->
-            val day = LocalDate.now(zone).plusDays(offset)
+        val oneOffDate = entry.optString("date").takeIf { it.matches(Regex("\\d{4}-\\d{2}-\\d{2}")) }
+            ?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
+        val candidateDays = if (oneOffDate != null) listOf(oneOffDate) else (0L..7L).map { LocalDate.now(zone).plusDays(it) }
+        val trigger = candidateDays.firstNotNullOfOrNull { day ->
             val weekday = day.dayOfWeek.value % 7
-            if (weekday !in allowedDays) return@firstNotNullOfOrNull null
+            if (oneOffDate == null && weekday !in allowedDays) return@firstNotNullOfOrNull null
             val start = day.atTime(time).atZone(zone)
             var end = day.atTime(endTime).atZone(zone)
             if (!end.isAfter(start)) end = end.plusDays(1)

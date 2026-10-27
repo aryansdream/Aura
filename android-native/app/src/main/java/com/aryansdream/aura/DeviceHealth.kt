@@ -29,6 +29,10 @@ object DeviceHealth {
         val start = LocalDate.now().atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
         val end = System.currentTimeMillis()
         val usage = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+        // Match Android's per-app foreground totals, which underpin Digital Wellbeing's daily app usage.
+        val aggregateMinutes = usage.queryAndAggregateUsageStats(start, end).values
+            .sumOf { it.totalTimeInForeground }.div(60_000L).toInt()
+        if (aggregateMinutes > 0) return aggregateMinutes
         val events = usage.queryEvents(start, end)
         val event = UsageEvents.Event()
         val active = mutableSetOf<String>()
@@ -52,14 +56,20 @@ object DeviceHealth {
             last = time
         }
         if (active.isNotEmpty() && screenInteractive) total += (end - last).coerceAtLeast(0)
-        if (!sawActivityEvents) {
-            // Older devices and some vendor builds omit activity events; use Android's daily aggregate as a fallback.
-            return usage.queryAndAggregateUsageStats(start, end).values.sumOf { it.totalTimeInForeground }.div(60_000L).toInt()
-        }
+        if (!sawActivityEvents || total == 0L) return aggregateMinutes
         return (total / 60_000L).toInt()
     }
 
+    suspend fun hasStepPermission(context: Context): Boolean {
+        if (HealthConnectClient.getSdkStatus(context) != HealthConnectClient.SDK_AVAILABLE) return false
+        val client = HealthConnectClient.getOrCreate(context)
+        return stepPermission in client.permissionController.getGrantedPermissions()
+    }
+
     suspend fun healthSteps(context: Context): Long? {
+        if (HealthConnectClient.getSdkStatus(context) != HealthConnectClient.SDK_AVAILABLE) {
+            throw IllegalStateException("Health Connect is not installed or available on this device.")
+        }
         val client = HealthConnectClient.getOrCreate(context)
         if (stepPermission !in client.permissionController.getGrantedPermissions()) return null
         val zone = ZoneId.systemDefault()
