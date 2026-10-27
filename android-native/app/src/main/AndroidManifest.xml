@@ -41,6 +41,15 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/aura_focus_block_accessibility" />
         </service>
+        <service
+            android:name=".FocusNotificationListener"
+            android:label="AURA focus notification blocker"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
         <receiver android:name=".ClassReminderReceiver" android:exported="false" />
         <receiver android:name=".ClassReminderBootReceiver" android:enabled="true" android:exported="false">
             <intent-filter>
