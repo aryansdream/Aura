@@ -14,6 +14,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.time.LocalDate
 import java.time.LocalTime
+import java.time.LocalDateTime
 import java.time.ZoneId
 
 object ClassReminderScheduler {
@@ -29,7 +30,7 @@ object ClassReminderScheduler {
         val saved = JSONArray()
         for (i in 0 until entries.length()) {
             val entry = entries.optJSONObject(i) ?: continue
-            if (entry.optString("kind") != "Class" || !entry.optBoolean("reminderEnabled")) continue
+            if (!entry.optBoolean("reminderEnabled")) continue
             saved.put(JSONObject(entry.toString()))
             scheduleNext(context, entry)
         }
@@ -45,13 +46,21 @@ object ClassReminderScheduler {
         val days = entry.optJSONArray("days") ?: return
         val allowedDays = (0 until days.length()).map { days.optInt(it) }.toSet()
         val time = runCatching { LocalTime.parse(entry.optString("start")) }.getOrNull() ?: return
+        val endTime = runCatching { LocalTime.parse(entry.optString("end")) }.getOrNull() ?: return
+        val intervalMinutes = entry.optInt("reminderIntervalMinutes", 0).coerceAtLeast(0)
         val zone = ZoneId.systemDefault()
         val now = java.time.ZonedDateTime.now(zone)
         val trigger = (0L..7L).firstNotNullOfOrNull { offset ->
             val day = LocalDate.now(zone).plusDays(offset)
             val weekday = day.dayOfWeek.value % 7
-            val candidate = day.atTime(time).atZone(zone)
-            candidate.takeIf { weekday in allowedDays && it.isAfter(now) }?.toInstant()?.toEpochMilli()
+            if (weekday !in allowedDays) return@firstNotNullOfOrNull null
+            val start = day.atTime(time).atZone(zone)
+            var end = day.atTime(endTime).atZone(zone)
+            if (!end.isAfter(start)) end = end.plusDays(1)
+            val candidate = if (now.isAfter(start) && now.isBefore(end)) {
+                if (intervalMinutes == 0) null else now.plusMinutes(intervalMinutes.toLong()).takeIf { !it.isAfter(end) }
+            } else start.takeIf { it.isAfter(now) }
+            candidate?.toInstant()?.toEpochMilli()
         } ?: return
         val alarm = context.getSystemService(AlarmManager::class.java)
         val pending = pendingIntent(context, entry.optString("id"), entry.optString("title"))
@@ -78,8 +87,8 @@ class ClassReminderReceiver : BroadcastReceiver() {
         val open = PendingIntent.getActivity(context, 0, Intent(context, MainActivity::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val notification = NotificationCompat.Builder(context, CHANNEL)
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
-            .setContentTitle("Class reminder")
-            .setContentText(title.ifBlank { "Your class is starting." })
+            .setContentTitle("Scheduled reminder")
+            .setContentText(title.ifBlank { "Your scheduled activity is starting." })
             .setContentIntent(open)
             .setAutoCancel(true)
             .setCategory(NotificationCompat.CATEGORY_REMINDER)
