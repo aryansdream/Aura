@@ -104,6 +104,7 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
     var steps by remember { mutableStateOf("") }
     var screenTime by remember { mutableStateOf("") }
     var calories by remember { mutableStateOf("") }
+    var showMissions by remember { mutableStateOf(context.getSharedPreferences("aura_native", 0).getBoolean("show_missions", true)) }
     var usageAccess by remember { mutableStateOf(false) }
     var deviceScreenMinutes by remember { mutableStateOf<Int?>(null) }
     var syncStatus by remember { mutableStateOf("") }
@@ -116,6 +117,8 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
                     AuraApi.request(context, "/api/me") to AuraApi.request(context, "/api/planner")
                 }
                 account = me; user = me.optJSONObject("user"); planner = plan.optJSONObject("data") ?: JSONObject()
+                context.getSharedPreferences("aura_native", 0).edit().putString("planner_cache", planner.toString()).apply()
+                ClassReminderScheduler.sync(context, planner)
                 val health = planner.optJSONArray("lifestyle")?.lastObjectForDay(LocalDate.now().toString())
                 if (health != null) { steps = health.optInt("steps").takeIf { it > 0 }?.toString() ?: ""; screenTime = health.optInt("screenTime").takeIf { it > 0 }?.toString() ?: ""; calories = health.optInt("calories").takeIf { it > 0 }?.toString() ?: "" }
                 if (subjectChoice.isBlank()) subjectChoice = planner.optJSONArray("subjects")?.optJSONObject(0)?.optString("id").orEmpty()
@@ -177,9 +180,19 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
             }
             if (error.isNotBlank()) Text(error, Modifier.padding(horizontal = 20.dp), color = Color(0xFFFF8D8D), fontSize = 12.sp)
             when (page) {
-                "Today" -> HomePage(account, busy, onComplete = { id -> scope.launch { try { withContext(Dispatchers.IO) { AuraApi.request(context, "/api/complete", JSONObject().put("taskId", id)) }; load() } catch (e: Exception) { error = e.message ?: "Could not save." } } })
+                "Today" -> HomePage(account, busy, showMissions, { showMissions = !showMissions; context.getSharedPreferences("aura_native", 0).edit().putBoolean("show_missions", showMissions).apply() }, onComplete = { id -> scope.launch { try { withContext(Dispatchers.IO) { AuraApi.request(context, "/api/complete", JSONObject().put("taskId", id)) }; load() } catch (e: Exception) { error = e.message ?: "Could not save." } } })
                 "Focus" -> FocusPage(planner.optJSONArray("subjects") ?: JSONArray(), subjectChoice, { subjectChoice = it }, focusMinutes, { focusMinutes = it }, context.getSharedPreferences("aura_native", 0).getLong("focus_deadline", 0), focusNow, onStartFocus, onStopFocus)
-                "Study" -> StudyPage(planner)
+                "Study" -> StudyPage(planner) { next ->
+                    planner = next
+                    context.getSharedPreferences("aura_native", 0).edit().putString("planner_cache", next.toString()).apply()
+                    ClassReminderScheduler.sync(context, next)
+                    scope.launch {
+                        busy = true
+                        try { withContext(Dispatchers.IO) { AuraApi.request(context, "/api/planner", JSONObject().put("data", next)) }; error = "Study space saved." }
+                        catch (e: Exception) { error = e.message ?: "Could not save the study space." }
+                        busy = false
+                    }
+                }
                 "Life" -> LifePage(steps, { steps = it }, screenTime, { screenTime = it }, calories, { calories = it }, busy, deviceScreenMinutes, usageAccess, syncStatus, onRequestSteps, onUsageAccess) {
                     scope.launch {
                         busy = true
@@ -210,15 +223,19 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
     }
 }
 
-@Composable private fun HomePage(account: JSONObject?, busy: Boolean, onComplete: (String) -> Unit) {
+@Composable private fun HomePage(account: JSONObject?, busy: Boolean, showMissions: Boolean, toggleMissions: () -> Unit, onComplete: (String) -> Unit) {
     val stats = account?.optJSONObject("stats") ?: JSONObject()
     val missions = account?.optJSONArray("today") ?: JSONArray()
+    val earnedDays = (0 until (account?.optJSONArray("days")?.length() ?: 0)).mapNotNull { account?.optJSONArray("days")?.optString(it) }.toSet()
+    var streak = 0
+    var date = LocalDate.now()
+    while (earnedDays.contains(date.toString())) { streak++; date = date.minusDays(1) }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(bottom = 24.dp)) {
         item { Text("TODAY · ${LocalDate.now()}", color = Muted, fontSize = 10.sp, letterSpacing = 1.5.sp) }
-        item { Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(20.dp)) { Column(Modifier.fillMaxWidth().padding(20.dp)) { Text("YOUR AURA", color = Muted, fontSize = 10.sp, letterSpacing = 1.5.sp); Text(stats.optInt("total").toString(), fontSize = 42.sp, fontWeight = FontWeight.Black, color = Purple); Text("${stats.optInt("pending")} AP waiting for validation", color = Muted, fontSize = 12.sp) } } }
-        item { SectionTitle("Today's missions", "${missions.length()} selected") }
-        if (missions.length() == 0) item { EmptyCard("Your daily missions will appear here after you add them on AURA.") }
-        items((0 until missions.length()).mapNotNull { missions.optJSONObject(it) }) { task ->
+        item { Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(20.dp)) { Column(Modifier.fillMaxWidth().padding(20.dp)) { Text("YOUR AURA", color = Muted, fontSize = 10.sp, letterSpacing = 1.5.sp); Text(stats.optInt("total").toString(), fontSize = 42.sp, fontWeight = FontWeight.Black, color = Purple); Text("${stats.optInt("pending")} AP waiting for validation", color = Muted, fontSize = 12.sp); Spacer(Modifier.height(14.dp)); Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Metric("DAY STREAK", "$streak ∞"); Metric("COMPLETED", "${stats.optInt("completed")}") } } } }
+        item { Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { SectionTitle("Today's missions", if (showMissions) "${missions.length()} selected" else "Hidden from home") }; TextButton(onClick = toggleMissions) { Text(if (showMissions) "Hide" else "Show") } } }
+        if (showMissions && missions.length() == 0) item { EmptyCard("Your daily missions will appear here after you add them on AURA.") }
+        if (showMissions) items((0 until missions.length()).mapNotNull { missions.optJSONObject(it) }) { task ->
             Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) {
                 Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) { Text(task.optString("title"), fontWeight = FontWeight.SemiBold); Text("${task.optString("category")} · ${task.optInt("points")} AP", color = Muted, fontSize = 11.sp) }
@@ -228,6 +245,8 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
         }
     }
 }
+
+@Composable private fun Metric(label: String, value: String) { Column { Text(label, color = Muted, fontSize = 8.sp, letterSpacing = 1.sp); Text(value, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color(0xFF83D6C4)) } }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable private fun FocusPage(subjects: JSONArray, selected: String, select: (String) -> Unit, minutes: Int, setMinutes: (Int) -> Unit, deadline: Long, focusNow: Long, start: (String, String, Int) -> Unit, stop: () -> Unit) {
@@ -262,19 +281,90 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
     }
 }
 
-@Composable private fun StudyPage(planner: JSONObject) {
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable private fun StudyPage(planner: JSONObject, save: (JSONObject) -> Unit) {
     val subjects = planner.optJSONArray("subjects") ?: JSONArray()
+    val schedule = planner.optJSONArray("schedule") ?: JSONArray()
+    var subjectDialog by remember { mutableStateOf(false) }
+    var subjectToEdit by remember { mutableStateOf<String?>(null) }
+    var subjectName by remember { mutableStateOf("") }
+    var subjectTeacher by remember { mutableStateOf("") }
+    var subjectColor by remember { mutableStateOf("#8B7CF6") }
+    var routineDialog by remember { mutableStateOf(false) }
+    var routineToEdit by remember { mutableStateOf<String?>(null) }
+    var routineTitle by remember { mutableStateOf("") }
+    var routineStart by remember { mutableStateOf("09:00") }
+    var routineEnd by remember { mutableStateOf("10:00") }
+    var routineDays by remember { mutableStateOf((LocalDate.now().dayOfWeek.value % 7).toString()) }
+    var routineKind by remember { mutableStateOf("Study") }
+    var routineReminder by remember { mutableStateOf(false) }
+    var routineSubject by remember { mutableStateOf("") }
+    var subjectMenu by remember { mutableStateOf(false) }
+    fun saveSubjects(nextSubjects: JSONArray) { save(JSONObject(planner.toString()).put("subjects", nextSubjects)) }
+    fun saveSchedule(nextSchedule: JSONArray) { save(JSONObject(planner.toString()).put("schedule", nextSchedule)) }
+
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(bottom = 20.dp)) {
-        item { SectionTitle("Study space", "Your saved subjects") }
-        if (subjects.length() == 0) item { EmptyCard("Add subjects from AURA on the web first. They sync to this native app.") }
+        item { Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { SectionTitle("Study space", "Subjects and your timetable") }; TextButton(onClick = { subjectToEdit = null; subjectName = ""; subjectTeacher = ""; subjectColor = "#8B7CF6"; subjectDialog = true }) { Text("+ Subject") } } }
+        if (subjects.length() == 0) item { EmptyCard("Add your first subject here. It will sync to your AURA account.") }
         items((0 until subjects.length()).mapNotNull { subjects.optJSONObject(it) }) { subject ->
             Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) { Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(10.dp).background(runCatching { Color(android.graphics.Color.parseColor(subject.optString("color", "#B5A9FF"))) }.getOrDefault(Purple), CircleShape))
-                Column(Modifier.padding(start = 12.dp)) { Text(subject.optString("name"), fontWeight = FontWeight.SemiBold); if (subject.optString("teacher").isNotBlank()) Text(subject.optString("teacher"), color = Muted, fontSize = 11.sp) }
+                Box(Modifier.size(12.dp).background(runCatching { Color(android.graphics.Color.parseColor(subject.optString("color", "#B5A9FF"))) }.getOrDefault(Purple), CircleShape))
+                Column(Modifier.weight(1f).padding(start = 12.dp)) { Text(subject.optString("name"), fontWeight = FontWeight.SemiBold); if (subject.optString("teacher").isNotBlank()) Text(subject.optString("teacher"), color = Muted, fontSize = 11.sp) }
+                TextButton(onClick = { subjectToEdit = subject.optString("id"); subjectName = subject.optString("name"); subjectTeacher = subject.optString("teacher"); subjectColor = subject.optString("color", "#8B7CF6"); subjectDialog = true }) { Text("Edit") }
             } }
         }
-        item { EmptyCard("Routine and subject editing will be added as native controls in the next build.") }
+        item { Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { SectionTitle("Timetable", "Edit repeating study blocks") }; TextButton(onClick = { routineToEdit = null; routineTitle = ""; routineStart = "09:00"; routineEnd = "10:00"; routineDays = (LocalDate.now().dayOfWeek.value % 7).toString(); routineKind = "Study"; routineSubject = ""; routineReminder = false; routineDialog = true }) { Text("+ Routine") } } }
+        if (schedule.length() == 0) item { EmptyCard("Add a recurring class, study block, or personal activity.") }
+        items((0 until schedule.length()).mapNotNull { schedule.optJSONObject(it) }) { entry ->
+            Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) { Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) { Text(entry.optString("title"), fontWeight = FontWeight.SemiBold); Text("${entry.optString("start")}–${entry.optString("end")} · ${entry.optString("kind")} · ${entry.optJSONArray("days")?.joinInts() ?: ""}", color = Muted, fontSize = 10.sp) }
+                TextButton(onClick = { routineToEdit = entry.optString("id"); routineTitle = entry.optString("title"); routineStart = entry.optString("start"); routineEnd = entry.optString("end"); routineDays = entry.optJSONArray("days")?.joinInts()?.replace("Sun", "0").orEmpty(); routineKind = entry.optString("kind", "Study"); routineSubject = entry.optString("subjectId"); routineReminder = entry.optBoolean("reminderEnabled"); routineDialog = true }) { Text("Edit") }
+                TextButton(onClick = { val updated = JSONArray(); for (i in 0 until schedule.length()) if (schedule.optJSONObject(i)?.optString("id") != entry.optString("id")) updated.put(schedule.optJSONObject(i)); saveSchedule(updated) }) { Text("Delete", color = Color(0xFFFF8D8D)) }
+            } }
+        }
     }
+
+    if (subjectDialog) AlertDialog(onDismissRequest = { subjectDialog = false }, title = { Text(if (subjectToEdit == null) "Add subject" else "Edit subject") }, text = {
+        Column {
+            AuraField("Subject name", subjectName, { subjectName = it })
+            AuraField("Teacher (optional)", subjectTeacher, { subjectTeacher = it })
+            AuraField("Color · hex code", subjectColor, { subjectColor = it }, keyboard = KeyboardType.Ascii)
+            Row(horizontalArrangement = Arrangement.spacedBy(7.dp), modifier = Modifier.padding(top = 10.dp)) { listOf("#8B7CF6", "#54B8A7", "#E8886C", "#6E9CE7", "#D393C5", "#D2AE5F").forEach { color -> Box(Modifier.size(27.dp).background(Color(android.graphics.Color.parseColor(color)), CircleShape).clickable { subjectColor = color }) } }
+        }
+    }, confirmButton = { TextButton(onClick = {
+        val id = subjectToEdit ?: "s_${java.util.UUID.randomUUID()}"
+        val updated = JSONArray()
+        for (i in 0 until subjects.length()) { val old = subjects.optJSONObject(i) ?: continue; if (old.optString("id") != id) updated.put(old) }
+        updated.put(JSONObject().put("id", id).put("name", subjectName.trim()).put("teacher", subjectTeacher.trim()).put("color", subjectColor).put("notes", ""))
+        saveSubjects(updated); subjectDialog = false
+    }, enabled = subjectName.trim().isNotEmpty()) { Text("Save") } }, dismissButton = { TextButton(onClick = { subjectDialog = false }) { Text("Cancel") } })
+
+    if (routineDialog) AlertDialog(onDismissRequest = { routineDialog = false }, title = { Text(if (routineToEdit == null) "Add routine" else "Edit routine") }, text = {
+        Column {
+            AuraField("Activity name", routineTitle, { routineTitle = it })
+            ExposedDropdownMenuBox(subjectMenu, { subjectMenu = it }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                val subjectLabel = (0 until subjects.length()).mapNotNull { subjects.optJSONObject(it) }.firstOrNull { it.optString("id") == routineSubject }?.optString("name") ?: "General / no subject"
+                OutlinedTextField(value = subjectLabel, onValueChange = {}, readOnly = true, label = { Text("Subject") }, modifier = Modifier.menuAnchor().fillMaxWidth(), trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(subjectMenu) })
+                ExposedDropdownMenu(subjectMenu, { subjectMenu = false }) { DropdownMenuItem(text = { Text("General / no subject") }, onClick = { routineSubject = ""; subjectMenu = false }); (0 until subjects.length()).mapNotNull { subjects.optJSONObject(it) }.forEach { item -> DropdownMenuItem(text = { Text(item.optString("name")) }, onClick = { routineSubject = item.optString("id"); subjectMenu = false }) } }
+            }
+            AuraField("Start · HH:mm", routineStart, { routineStart = it }, keyboard = KeyboardType.Ascii)
+            AuraField("End · HH:mm", routineEnd, { routineEnd = it }, keyboard = KeyboardType.Ascii)
+            AuraField("Days · 0 Sunday to 6 Saturday", routineDays, { routineDays = it }, keyboard = KeyboardType.Ascii)
+            Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.padding(top = 6.dp)) { listOf("Class", "Study", "Personal").forEach { kind -> FilterChip(selected = routineKind == kind, onClick = { routineKind = kind }, label = { Text(kind, fontSize = 10.sp) }) } }
+            if (routineKind == "Class") Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                Column(Modifier.weight(1f)) { Text("Remind me", fontWeight = FontWeight.Medium); Text("Notify me when this class starts", color = Muted, fontSize = 11.sp) }
+                Switch(checked = routineReminder, onCheckedChange = { routineReminder = it })
+            }
+        }
+    }, confirmButton = { TextButton(onClick = {
+        val id = routineToEdit ?: "r_${java.util.UUID.randomUUID()}"
+        val days = routineDays.split(",").mapNotNull { it.trim().toIntOrNull() }.filter { it in 0..6 }.distinct()
+        if (days.isNotEmpty() && routineStart.matches(Regex("([01]\\d|2[0-3]):[0-5]\\d")) && routineEnd.matches(Regex("([01]\\d|2[0-3]):[0-5]\\d"))) {
+            val updated = JSONArray(); for (i in 0 until schedule.length()) { val old = schedule.optJSONObject(i) ?: continue; if (old.optString("id") != id) updated.put(old) }
+            updated.put(JSONObject().put("id", id).put("title", routineTitle.trim()).put("subjectId", routineSubject).put("days", JSONArray(days)).put("date", "").put("overrideWeekday", false).put("start", routineStart).put("end", routineEnd).put("kind", routineKind).put("reminderEnabled", routineKind == "Class" && routineReminder))
+            saveSchedule(updated); routineDialog = false
+        }
+    }, enabled = routineTitle.trim().isNotEmpty()) { Text("Save") } }, dismissButton = { TextButton(onClick = { routineDialog = false }) { Text("Cancel") } })
 }
 
 @Composable private fun LifePage(steps: String, setSteps: (String) -> Unit, screen: String, setScreen: (String) -> Unit, calories: String, setCalories: (String) -> Unit, busy: Boolean, deviceScreenMinutes: Int?, usageAccess: Boolean, syncStatus: String, connectSteps: () -> Unit, usageSettings: () -> Unit, save: () -> Unit) {
@@ -334,6 +424,7 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
     OutlinedTextField(value, onChange, modifier = Modifier.fillMaxWidth().padding(top = 9.dp), label = { Text(label) }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = keyboard), visualTransformation = if (password) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None)
 }
 private fun JSONArray.lastObjectForDay(day: String): JSONObject? { for (i in length() - 1 downTo 0) { val item = optJSONObject(i); if (item?.optString("date") == day) return item }; return null }
+private fun JSONArray.joinInts(): String = (0 until length()).mapNotNull { optInt(it).takeIf { value -> value in 0..6 } }.joinToString(",")
 
 private fun saveLifeEntry(context: android.content.Context, planner: JSONObject, steps: String, screenTime: String, calories: String): JSONObject {
     val data = JSONObject(planner.toString())
