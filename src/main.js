@@ -13,7 +13,7 @@ function applyTheme(theme) {
   if (button) { button.textContent = dark ? 'Light mode' : 'Dark mode'; button.setAttribute('aria-label', `Switch to ${dark ? 'light' : 'dark'} mode`); button.setAttribute('aria-pressed', String(dark)); }
   const meta = document.querySelector('meta[name="theme-color"]'); if (meta) meta.content = dark ? '#101116' : '#f4f5f8';
 }
-applyTheme(localStorage.getItem(THEME_KEY) || 'light');
+applyTheme(localStorage.getItem(THEME_KEY) || 'dark');
 $('themeToggle').addEventListener('click', () => { const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; localStorage.setItem(THEME_KEY, next); applyTheme(next); });
 const checklistShortcut = new URLSearchParams(location.search).get('widget') === 'checklist';
 if (checklistShortcut) {
