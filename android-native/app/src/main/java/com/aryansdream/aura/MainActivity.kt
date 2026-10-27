@@ -4,6 +4,12 @@ import android.app.DatePickerDialog
 import android.app.TimePickerDialog
 import android.app.AlarmManager
 import android.Manifest
+import android.content.ClipboardManager
+import android.content.ClipData
+import android.content.ClipDescription
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.IntentFilter
 import android.provider.Settings
 import android.content.Intent
 import android.os.Build
@@ -11,6 +17,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.NotificationManagerCompat
 import androidx.compose.foundation.background
@@ -66,8 +73,53 @@ private val Muted = Color(0xFFA3A6B5)
 
 class MainActivity : ComponentActivity() {
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    private val clipboard by lazy { getSystemService(CLIPBOARD_SERVICE) as ClipboardManager }
+    private val clipboardListener = ClipboardManager.OnPrimaryClipChangedListener {
+        syncSystemClipboard()
+    }
+    private val syncedClipboardReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val prefs = getSharedPreferences("aura_native", MODE_PRIVATE)
+            if (!prefs.getBoolean("lan_clipboard_sync", true)) return
+            val text = prefs.getString("lan_clipboard_text", null)?.takeIf(String::isNotBlank) ?: return
+            runCatching { clipboard.setPrimaryClip(ClipData.newPlainText("Aura shared clipboard", text)) }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        clipboard.addPrimaryClipChangedListener(clipboardListener)
+        val filter = IntentFilter(LanFocusSync.ACTION_CLIPBOARD_CHANGED)
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(syncedClipboardReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        else registerReceiver(syncedClipboardReceiver, filter)
+        LanFocusSync.start(this)
+    }
+
+    override fun onPause() {
+        clipboard.removePrimaryClipChangedListener(clipboardListener)
+        runCatching { unregisterReceiver(syncedClipboardReceiver) }
+        super.onPause()
+    }
+
+    private fun syncSystemClipboard() {
+        val prefs = getSharedPreferences("aura_native", MODE_PRIVATE)
+        if (!prefs.getBoolean("lan_clipboard_sync", true)) return
+        if (Build.VERSION.SDK_INT >= 33 && clipboard.primaryClipDescription?.extras?.getBoolean(ClipDescription.EXTRA_IS_SENSITIVE, false) == true) return
+        val clip = clipboard.primaryClip ?: return
+        val item = runCatching { clip.getItemAt(0) }.getOrNull() ?: return
+        val text = runCatching { item.coerceToText(this)?.toString() }.getOrNull().orEmpty()
+        if (text.isNotBlank()) LanFocusSync.syncClipboard(this, text)
+        val uri = item.uri ?: return
+        val uriString = uri.toString()
+        if (prefs.getString("lan_last_shared_clip_uri", null) == uriString) return
+        prefs.edit().putString("lan_last_shared_clip_uri", uriString).apply()
+        Thread {
+            LanShare.peers(this).forEach { peer -> runCatching { LanShare.sendUri(this, peer, uri) } }
+        }.start()
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        LanFocusSync.start(this)
         if (Build.VERSION.SDK_INT >= 33) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         AppUpdateScheduler.schedule(this)
         Thread { runCatching { AppUpdater.checkAndNotify(applicationContext) } }.start()
@@ -75,8 +127,7 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = darkColorScheme(primary = Purple, background = Night, surface = Surface, onBackground = Color(0xFFF4F2FC), onSurface = Color(0xFFF4F2FC), secondary = Color(0xFF83D6C4))) {
                 AuraApp(
                     onStartFocus = { subjectId, subject, minutes ->
-                        val intent = Intent(this, FocusService::class.java).putExtra("subjectId", subjectId).putExtra("subject", subject).putExtra("duration", minutes * 60_000L)
-                            .putExtra("session", java.util.UUID.randomUUID().toString())
+                        val intent = Intent(this, FocusService::class.java).putExtra("subjectId", subjectId).putExtra("subject", subject).putExtra("duration", minutes * 60_000L).putExtra("session", java.util.UUID.randomUUID().toString())
                         if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
                     },
                     onStopFocus = { startService(Intent(this, FocusService::class.java).setAction(FocusService.ACTION_STOP)) }
@@ -213,8 +264,8 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
 
     Scaffold(containerColor = if (focusFullScreen) Color.Black else Night, bottomBar = {
         if (!focusFullScreen) NavigationBar(containerColor = Surface, contentColor = Muted) {
-            listOf("Today" to Icons.Default.Home, "Focus" to Icons.Default.Timer, "Subjects" to Icons.Default.MenuBook, "Classes" to Icons.Default.CalendarMonth, "Tasks" to Icons.Default.Alarm, "More" to Icons.Default.MoreVert).forEach { (label, icon) ->
-                NavigationBarItem(selected = page == label || (label == "More" && page in setOf("Table", "Info")), onClick = { page = label; if (label == "More") { } }, icon = { Icon(icon, contentDescription = label) }, label = { Text(label, fontSize = 10.sp) })
+                listOf("Today" to Icons.Default.Home, "Focus" to Icons.Default.Timer, "Subjects" to Icons.Default.MenuBook, "Classes" to Icons.Default.CalendarMonth, "Tasks" to Icons.Default.Alarm, "More" to Icons.Default.MoreVert).forEach { (label, icon) ->
+                NavigationBarItem(selected = page == label || (label == "More" && page in setOf("Table", "Info", "Share")), onClick = { page = label; if (label == "More") { } }, icon = { Icon(icon, contentDescription = label) }, label = { Text(label, fontSize = 10.sp) })
             }
         }
     }) { padding ->
@@ -248,8 +299,10 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                         page = "Table"
                         scope.launch { leaderboard = withContext(Dispatchers.IO) { AuraApi.request(context, "/api/leaderboard").optJSONArray("entries") ?: JSONArray() } }
                     },
-                    onInfo = { page = "Info" }
+                    onInfo = { page = "Info" },
+                    onShare = { page = "Share" }
                 )
+                "Share" -> SharePage(context)
                 "Table" -> LeaderboardPage(leaderboard)
                 "Info" -> InfoPage(onSignOut = {
                     scope.launch {
@@ -379,6 +432,7 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
     var waterInterval by remember { mutableIntStateOf(prefs.getInt("water_interval_minutes", 30).coerceIn(5, 90)) }
     var blockApps by remember { mutableStateOf(prefs.getBoolean("block_social_apps", false)) }
     var blockNotifications by remember { mutableStateOf(prefs.getBoolean("block_social_notifications", false)) }
+    var clipboardSync by remember { mutableStateOf(prefs.getBoolean("lan_clipboard_sync", true)) }
     var waterReminderCount by remember { mutableIntStateOf(prefs.getInt("water_reminder_count", 0)) }
     var showWaterPrompt by remember { mutableStateOf(false) }
     var accessibilityEnabled by remember { mutableStateOf(FocusBlockAccessibilityService.isEnabled(context)) }
@@ -437,6 +491,9 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                     HorizontalDivider(color = Muted.copy(alpha = .2f))
                     Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("Block social app notifications", fontWeight = FontWeight.Medium); Text("Mute their alerts during focus", color = Muted, fontSize = 10.sp) }; Switch(checked = blockNotifications, onCheckedChange = { blockNotifications = it; prefs.edit().putBoolean("block_social_notifications", it).apply() }) }
                     if (blockNotifications && !notificationListenerEnabled) TextButton(onClick = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }) { Text("Allow notification access") }
+                    HorizontalDivider(color = Muted.copy(alpha = .2f))
+                    Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("Aura Ecosystem clipboard", fontWeight = FontWeight.Medium); Text("Sync copied text across Aura devices on this Wi-Fi", color = Muted, fontSize = 10.sp) }; Switch(checked = clipboardSync, onCheckedChange = { clipboardSync = it; prefs.edit().putBoolean("lan_clipboard_sync", it).apply() }) }
+                    Text("Clipboard sync is local to this Wi-Fi and keeps working without Aura’s server. Android only lets Aura read clipboard changes while Aura is open; sensitive clipboard items are skipped.", color = Muted, fontSize = 10.sp, lineHeight = 14.sp)
                 }
             }
             Text("The timer continues with the screen off. App blocking and notification blocking are optional and require their Android access to be enabled.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp, modifier = Modifier.padding(bottom = 10.dp))
@@ -497,11 +554,66 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
     }
 }
 
-@Composable private fun MorePage(onTable: () -> Unit, onInfo: () -> Unit) {
+@Composable private fun MorePage(onTable: () -> Unit, onInfo: () -> Unit, onShare: () -> Unit) {
     Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         SectionTitle("More", "Community and AURA")
+        Card(onClick = onShare, colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(16.dp)) { Row(Modifier.fillMaxWidth().padding(20.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Share, null, tint = Purple); Column(Modifier.weight(1f).padding(start = 14.dp)) { Text("Aura Ecosystem", fontWeight = FontWeight.Bold); Text("Local Wi-Fi clipboard and file sharing", color = Muted, fontSize = 12.sp) }; Icon(Icons.Default.ChevronRight, null, tint = Muted) } }
         Card(onClick = onTable, colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(16.dp)) { Row(Modifier.fillMaxWidth().padding(20.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Leaderboard, null, tint = Purple); Column(Modifier.weight(1f).padding(start = 14.dp)) { Text("Common table", fontWeight = FontWeight.Bold); Text("See the community leaderboard", color = Muted, fontSize = 12.sp) }; Icon(Icons.Default.ChevronRight, null, tint = Muted) } }
         Card(onClick = onInfo, colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(16.dp)) { Row(Modifier.fillMaxWidth().padding(20.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Info, null, tint = Purple); Column(Modifier.weight(1f).padding(start = 14.dp)) { Text("About AURA", fontWeight = FontWeight.Bold); Text("Point rules, app details and connect", color = Muted, fontSize = 12.sp) }; Icon(Icons.Default.ChevronRight, null, tint = Muted) } }
+    }
+}
+
+@Composable private fun SharePage(context: android.content.Context) {
+    val scope = rememberCoroutineScope()
+    val prefs = remember { context.getSharedPreferences("aura_native", 0) }
+    var peers by remember { mutableStateOf(LanShare.peers(context)) }
+    var text by remember { mutableStateOf("") }
+    var status by remember { mutableStateOf("") }
+    val picker = rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            runCatching { context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+            scope.launch {
+                val current = LanShare.peers(context)
+                if (current.isEmpty()) { status = "No Aura devices found on this Wi-Fi."; return@launch }
+                status = "Sending file to ${current.size} Aura device(s)…"
+                val result = withContext(Dispatchers.IO) {
+                    current.mapNotNull { peer -> runCatching { LanShare.sendUri(context, peer, uri); peer.optString("name") }.getOrNull() }
+                }
+                status = if (result.isEmpty()) "Could not send the file. Make sure both devices are signed into the same account and on this Wi-Fi." else "Shared successfully with ${result.joinToString()}."
+            }
+        }
+    }
+    LaunchedEffect(Unit) { while (true) { peers = LanShare.peers(context); delay(1500) } }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        SectionTitle("Aura Ecosystem", "Share locally over the same Wi-Fi")
+        Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(18.dp)) {
+            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Nearby Aura devices", fontWeight = FontWeight.Bold)
+                Text(if (peers.isEmpty()) "Looking for signed-in Aura devices on this Wi-Fi…" else peers.joinToString { it.optString("name", "Aura device") }, color = Muted, fontSize = 12.sp)
+                Text("Focus sessions and clipboard text sync automatically between these devices. Files and images you choose here are encrypted and saved in Downloads/Aura Ecosystem.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
+            }
+        }
+        Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(18.dp)) {
+            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Send text", fontWeight = FontWeight.Bold)
+                OutlinedTextField(value = text, onValueChange = { text = it }, modifier = Modifier.fillMaxWidth(), minLines = 3, label = { Text("Text to share") })
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { val clip = (context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as ClipboardManager).primaryClip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty(); if (clip.isNotBlank()) text = clip }) { Text("Paste") }
+                    Button(onClick = {
+                        scope.launch {
+                            val current = LanShare.peers(context)
+                            if (current.isEmpty()) { status = "No Aura devices found on this Wi-Fi."; return@launch }
+                            status = "Sending text…"
+                            val failed = withContext(Dispatchers.IO) { current.count { runCatching { LanShare.sendText(context, it, text) }.isFailure } }
+                            status = if (failed == 0) "Text sent to all nearby Aura devices." else "Sent, but $failed device(s) could not be reached."
+                        }
+                    }, enabled = text.isNotBlank() && peers.isNotEmpty()) { Text("Send to Aura devices") }
+                }
+            }
+        }
+        Button(onClick = { picker.launch(arrayOf("*/*")) }, enabled = peers.isNotEmpty(), modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.AttachFile, null); Spacer(Modifier.width(8.dp)); Text("Choose a file or image") }
+        if (status.isNotBlank()) Text(status, color = Purple, fontSize = 12.sp)
+        Text("Devices must be signed into the same Aura account, connected to the same Wi-Fi, and have Aura running or its accessibility service enabled. Transfers stay on the local network and do not use Aura’s server.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
     }
 }
 

@@ -3,6 +3,8 @@ package com.aryansdream.aura
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.ComponentName
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.PixelFormat
@@ -16,6 +18,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.os.Handler
 import android.os.Looper
+import android.content.IntentFilter
 import android.view.ViewGroup
 
 class FocusBlockAccessibilityService : AccessibilityService() {
@@ -23,6 +26,9 @@ class FocusBlockAccessibilityService : AccessibilityService() {
     private val handler = Handler(Looper.getMainLooper())
     private var lastForegroundPackage: String? = null
     private val delayedHide = Runnable { hideBlocker() }
+    private val focusChangedReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) { inspectCurrentApp() }
+    }
     private val checkActive = object : Runnable {
         override fun run() {
             val prefs = getSharedPreferences("aura_native", MODE_PRIVATE)
@@ -32,6 +38,10 @@ class FocusBlockAccessibilityService : AccessibilityService() {
     }
 
     override fun onServiceConnected() {
+        LanFocusSync.start(this)
+        val filter = IntentFilter(FocusService.ACTION_FOCUS_STATE_CHANGED)
+        if (android.os.Build.VERSION.SDK_INT >= 33) registerReceiver(focusChangedReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        else registerReceiver(focusChangedReceiver, filter)
         serviceInfo = AccessibilityServiceInfo().apply {
             // TYPE_WINDOWS_CHANGED fires when our own overlay is added/removed. Treating that
             // event as a foreground-app change made the blocker repeatedly hide and reappear.
@@ -68,6 +78,21 @@ class FocusBlockAccessibilityService : AccessibilityService() {
     }
 
     override fun onInterrupt() = hideBlocker()
+
+    private fun inspectCurrentApp() {
+        val prefs = getSharedPreferences("aura_native", MODE_PRIVATE)
+        if (!prefs.getBoolean("focus_running", false) || !prefs.getBoolean("block_social_apps", false)) {
+            hideBlocker(); return
+        }
+        val current = rootInActiveWindow?.packageName?.toString()
+        if (FocusAppPolicy.isDistracting(current)) showBlocker() else if (blocker != null) hideBlocker()
+    }
+
+    override fun onDestroy() {
+        runCatching { unregisterReceiver(focusChangedReceiver) }
+        hideBlocker()
+        super.onDestroy()
+    }
 
     private fun showBlocker() {
         if (blocker != null) return

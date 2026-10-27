@@ -1,4 +1,5 @@
 import { appDay, db, ensureSchema, send, userFromRequest } from '../lib/shared.js';
+import { randomBytes } from 'node:crypto';
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') return send(res, 405, { error: 'Method not allowed' });
@@ -7,9 +8,11 @@ export default async function handler(req, res) {
     if (!user) return send(res, 401, { error: 'Sign in to sync your progress.' });
     const day = appDay(req), sql = db();
     await ensureSchema(sql);
-    const [profile] = await sql`INSERT INTO aura_profiles(user_id, display_name)
+    await sql`INSERT INTO aura_profiles(user_id, display_name)
       VALUES(${user.id}, ${String(user.name || user.email?.split('@')[0] || 'Aura Explorer').slice(0,24)})
       ON CONFLICT(user_id) DO UPDATE SET user_id=EXCLUDED.user_id RETURNING display_name, gender`;
+    const [profile] = await sql`UPDATE aura_profiles SET lan_sync_key=COALESCE(lan_sync_key, ${randomBytes(32).toString('hex')})
+      WHERE user_id=${user.id} RETURNING display_name, gender, lan_sync_key AS "lanSyncKey"`;
     const [[stats], days, history] = await Promise.all([
       sql`SELECT COALESCE(SUM(points),0)::int AS total, 0::int AS pending, COUNT(*)::int AS completed,
           COUNT(*) FILTER (WHERE day=${day})::int AS today

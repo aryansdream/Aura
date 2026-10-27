@@ -43,29 +43,45 @@ class FocusService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) { stopFocus(); return START_NOT_STICKY }
+        if (intent?.action == ACTION_STOP || intent?.action == ACTION_STOP_REMOTE) {
+            stopFocus(syncRemote = intent.action == ACTION_STOP)
+            return START_NOT_STICKY
+        }
         val restoring = intent == null
         val nowWall = System.currentTimeMillis()
-        val endWall = if (restoring) prefs.getLong("focus_wall_deadline", 0L) else nowWall + (intent?.getLongExtra("duration", 25L * 60_000L) ?: 25L * 60_000L)
+        val remoteSync = intent?.getBooleanExtra("remoteSync", false) ?: false
+        if (remoteSync) prefs.edit()
+            .putBoolean("block_social_apps", intent?.getBooleanExtra("blockApps", false) ?: false)
+            .putBoolean("block_social_notifications", intent?.getBooleanExtra("blockNotifications", false) ?: false)
+            .putInt("water_interval_minutes", intent?.getIntExtra("waterInterval", 30)?.coerceIn(5, 90) ?: 30)
+            .apply()
+        val endWall = if (restoring) prefs.getLong("focus_wall_deadline", 0L)
+            else if (remoteSync) intent?.getLongExtra("endsAt", 0L)?.takeIf { it > 0L } ?: nowWall + (intent?.getLongExtra("duration", 25L * 60_000L) ?: 25L * 60_000L)
+            else nowWall + (intent?.getLongExtra("duration", 25L * 60_000L) ?: 25L * 60_000L)
         val duration = if (restoring) (endWall - nowWall).coerceAtLeast(0L) else endWall - nowWall
         if (duration <= 0L || (restoring && !prefs.getBoolean("focus_running", false))) { stopFocus(); return START_NOT_STICKY }
         val subject = intent?.getStringExtra("subject") ?: prefs.getString("focus_subject", "").orEmpty()
         val subjectId = intent?.getStringExtra("subjectId") ?: prefs.getString("focus_subject_id", "").orEmpty()
         val session = intent?.getStringExtra("session") ?: prefs.getString("focus_session", null) ?: UUID.randomUUID().toString()
+        val startedWall = if (remoteSync) intent?.getLongExtra("startedAt", 0L)?.takeIf { it > 0L } ?: nowWall else nowWall
         val deadline = SystemClock.elapsedRealtime() + duration
         val waterInterval = prefs.getInt("water_interval_minutes", 30).coerceIn(5, 90)
         val edit = prefs.edit().putBoolean("focus_running", true).putLong("focus_deadline", deadline)
             .putLong("focus_wall_deadline", endWall).putString("focus_subject", subject)
             .putString("focus_subject_id", subjectId).putString("focus_session", session)
-        if (!restoring) edit.putInt("focus_awarded", 0).putLong("focus_started_wall", nowWall).putLong("focus_duration_ms", duration)
+        if (!restoring) edit.putInt("focus_awarded", 0).putLong("focus_started_wall", startedWall).putLong("focus_duration_ms", endWall - startedWall)
             .putInt("water_reminder_count", 0).putLong("focus_next_water_at_elapsed", SystemClock.elapsedRealtime() + waterInterval * 60_000L)
         else if (prefs.getLong("focus_next_water_at_elapsed", 0L) == 0L) edit.putLong("focus_next_water_at_elapsed", SystemClock.elapsedRealtime() + waterInterval * 60_000L)
         edit.apply()
+        prefs.edit().putString("focus_shared_session_id", session).apply()
+        LanFocusSync.start(this)
+        sendBroadcast(Intent(ACTION_FOCUS_STATE_CHANGED).setPackage(packageName))
         startForeground(NOTIFICATION, notification(duration, subject))
         wakeLock = (getSystemService(POWER_SERVICE) as PowerManager).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Aura:FocusTimer").apply { setReferenceCounted(false); acquire(duration + 60_000L) }
         loop?.cancel()
         loop = CoroutineScope(Dispatchers.IO).launch {
             var awarded = prefs.getInt("focus_awarded", 0)
+            var lastLanPublish = 0L
             val startedAt = prefs.getLong("focus_started_wall", nowWall)
             val totalDuration = prefs.getLong("focus_duration_ms", duration)
             while (true) {
@@ -78,6 +94,10 @@ class FocusService : Service() {
                     nextWaterAt += waterInterval * 60_000L
                     prefs.edit().putLong("focus_next_water_at_elapsed", nextWaterAt)
                         .putInt("water_reminder_count", prefs.getInt("water_reminder_count", 0) + 1).apply()
+                }
+                if (nowElapsed - lastLanPublish >= 2_000L) {
+                    lastLanPublish = nowElapsed
+                    LanFocusSync.publish(applicationContext, session, true)
                 }
                 // Base awards on the original wall-clock start so service restarts don't
                 // restart the two-minute counter or skip already elapsed focus time.
@@ -164,12 +184,15 @@ class FocusService : Service() {
         getSystemService(NotificationManager::class.java).notify(ALARM_NOTIFICATION, alert)
     }
 
-    private fun stopFocus() {
+    private fun stopFocus(syncRemote: Boolean = true) {
         loop?.cancel(); loop = null
         if (wakeLock?.isHeld == true) wakeLock?.release()
         wakeLock = null
+        val session = prefs.getString("focus_session", "").orEmpty()
         if (prefs.getBoolean("focus_running", false)) saveStudySession()
         prefs.edit().putBoolean("focus_running", false).putLong("focus_deadline", 0).putLong("focus_wall_deadline", 0).putLong("focus_started_wall", 0).putLong("focus_duration_ms", 0).putInt("focus_awarded", 0).remove("focus_session").apply()
+        if (syncRemote && session.isNotBlank()) LanFocusSync.publish(applicationContext, session, false)
+        sendBroadcast(Intent(ACTION_FOCUS_STATE_CHANGED).setPackage(packageName))
         getSystemService(NotificationManager::class.java).cancel(NOTIFICATION)
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -201,6 +224,8 @@ class FocusService : Service() {
 
     companion object {
         const val ACTION_STOP = "com.aryansdream.aura.STOP_FOCUS"
+        const val ACTION_STOP_REMOTE = "com.aryansdream.aura.STOP_REMOTE_FOCUS"
+        const val ACTION_FOCUS_STATE_CHANGED = "com.aryansdream.aura.FOCUS_STATE_CHANGED"
         private const val CHANNEL = "aura_focus"
         private const val ALARM_CHANNEL = "aura_focus_alarm"
         private const val WATER_CHANNEL = "aura_focus_water"
