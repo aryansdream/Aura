@@ -51,11 +51,7 @@ export function initPlanner(api, getAccount) {
     syncInFlight = true;
     try {
       const syncResult = await api('/api/planner', { data: JSON.parse(snapshot) });
-      if (syncResult.comboAward?.addedPoints) window.dispatchEvent(new CustomEvent('aura:combo-awarded', { detail: syncResult.comboAward }));
       window.dispatchEvent(new Event('aura:planner-synced'));
-      for (const check of data.completionChecks) {
-        if (check.done && check.kind === 'Class' && !check.pointsSynced) await syncClassPoints(check);
-      }
       if (activeUser === userId && JSON.stringify(data) === snapshot) {
         localStorage.removeItem(pendingKey(userId));
         get('plannerSync').textContent = 'Synced to your account';
@@ -113,7 +109,6 @@ export function initPlanner(api, getAccount) {
     get('scheduleWeek').innerHTML = weekHtml;
     const current = scheduleSelectedDate === todayDate && selectedItems.find(item => item.start <= `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}` && item.end > `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`);
     get('scheduleNow').textContent = current ? `In your day now · ${current.title}` : 'Make room for what matters';
-    fillSubjectSelect(get('scheduleSubject'));
   }
   function renderSubjects() {
     const sorted = [...data.subjects].sort((a,b) => a.name.localeCompare(b.name));
@@ -127,7 +122,6 @@ export function initPlanner(api, getAccount) {
       const chart = `<div class="subject-mini-chart" role="img" aria-label="${esc(subject.name)} study minutes over the last seven days">${daily.map((minutes, i) => `<span class="subject-mini-day" title="${dateLabel(week[i])}: ${minutes} min"><i style="height:${minutes ? Math.max(5, Math.round(minutes/max*100)) : 2}%;background:${esc(subject.color)}"></i><small>${new Date(`${week[i]}T12:00:00`).toLocaleDateString(undefined,{weekday:'narrow'})}</small></span>`).join('')}</div>`;
       return `<article class="subject-card" style="--subject:${esc(subject.color)}"><div class="subject-card-top"><span class="subject-dot"></span><h3>${esc(subject.name)}</h3><div class="subject-actions"><button class="icon-button" type="button" data-edit-subject="${esc(subject.id)}" aria-label="Edit ${esc(subject.name)}" title="Edit subject">✎</button><button class="icon-button" type="button" data-remove-subject="${esc(subject.id)}" aria-label="Remove ${esc(subject.name)}" title="Remove subject">×</button></div></div>${subject.teacher ? `<p>${esc(subject.teacher)}</p>` : ''}<div class="subject-stats"><span><b>${hours.toFixed(1)}</b> study hours</span><span><b>${logs.length}</b> sessions</span><span><b>${tests.length}</b> upcoming tests</span></div><div class="subject-chart-label">STUDY TIME · 7 DAYS</div>${chart}${tests.slice(0,2).map(test => `<div class="subject-test"><span>${esc(test.title)}</span><b>${dateLabel(test.deadline)}</b></div>`).join('')}${subject.notes ? `<p class="subject-notes">${esc(subject.notes)}</p>` : ''}</article>`;
     }).join('') : '<div class="planner-empty">Add your first subject to bring classes, study time, and test dates together.</div>';
-    fillSubjectSelect(get('taskSubject'));
     fillSubjectSelect(get('studySubject'), false);
     window.dispatchEvent(new Event('aura:subjects-updated'));
   }
@@ -141,9 +135,8 @@ export function initPlanner(api, getAccount) {
     get('plannerTaskList').innerHTML = sorted.length ? sorted.map(task => {
       const remaining = task.deadline ? new Date(task.deadline).getTime() - Date.now() : Infinity;
       const urgency = remaining < 0 || remaining <= 48 * 3600_000 ? ' is-urgent' : remaining <= 7 * 86400_000 ? ' is-soon' : task.deadline ? ' is-later' : '';
-      const alarmLabel = task.alarmAt && !task.alarmFired ? `Alarm ${new Date(task.alarmAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : '';
-      const repeatLabel = task.reminderHours ? `Every ${task.reminderHours}h` : '';
-      return `<div class="planner-task${task.done ? ' is-done' : ''}${urgency}"><button class="task-check" type="button" data-toggle-task="${esc(task.id)}" aria-label="${task.done ? 'Reopen' : 'Complete'} ${esc(task.title)}">${task.done ? '✓' : ''}</button><div class="planner-task-copy"><b>${esc(task.title)}</b><small>${esc(subjectName(task.subjectId))}${task.kind === 'test' ? ' · Test' : task.kind === 'assignment' ? ' · Assignment' : ''}</small></div>${task.deadline ? `<span class="deadline-badge">${remaining < 0 ? 'Overdue' : `Due ${dateLabel(task.deadline)}`}</span>` : ''}${alarmLabel || repeatLabel ? `<span class="reminder-pill">${[alarmLabel, repeatLabel].filter(Boolean).join(' · ')}</span>` : ''}<button class="icon-button" type="button" data-remove-task="${esc(task.id)}" aria-label="Delete ${esc(task.title)}">×</button></div>`;
+      const reminderLabel = task.reminderType && task.reminderType !== 'none' && task.deadline ? `${task.reminderType === 'alarm' ? 'Alarm' : 'Notification'} · ${new Date(task.deadline).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : '';
+      return `<div class="planner-task${task.done ? ' is-done' : ''}${urgency}"><button class="task-check" type="button" data-toggle-task="${esc(task.id)}" aria-label="${task.done ? 'Reopen' : 'Complete'} ${esc(task.title)}">${task.done ? '✓' : ''}</button><div class="planner-task-copy"><b>${esc(task.title)}</b><small>One-time task</small></div>${task.deadline ? `<span class="deadline-badge">${remaining < 0 ? 'Overdue' : `Due ${dateLabel(task.deadline)}`}</span>` : ''}${reminderLabel ? `<span class="reminder-pill">${reminderLabel}</span>` : ''}<button class="icon-button" type="button" data-remove-task="${esc(task.id)}" aria-label="Delete ${esc(task.title)}">×</button></div>`;
     }).join('') : '<div class="planner-empty">Add your first task above.</div>';
     const soon = open.filter(task => task.deadline && new Date(task.deadline).getTime() - Date.now() <= 48 * 3600_000);
     const panel = get('upcomingTasksSection');
@@ -194,12 +187,9 @@ export function initPlanner(api, getAccount) {
     get('lifestyleTable').innerHTML = rows.length ? `<table class="summary-table"><thead><tr><th>Day</th><th>Sleep</th><th>Water</th><th>Movement</th><th>Calories</th><th>Steps</th><th>Screen time</th><th>Mood</th></tr></thead><tbody>${rows.slice().reverse().map(item => `<tr><td>${dateLabel(item.date)}</td><td>${Number(item.sleep).toFixed(1)}h</td><td>${item.water}</td><td>${item.movement}m</td><td>${Number(item.calories || 0).toLocaleString()}</td><td>${Number(item.steps || 0).toLocaleString()}</td><td>${Number(item.screenTime || 0)}m</td><td>${['','Low','Okay','Good','Great','Excellent'][item.mood] || '—'}</td></tr>`).join('')}</tbody></table>` : '<div class="planner-empty">A short daily check-in helps you notice patterns over time.</div>';
     get('lifeDate').value = today;
   }
-  function renderSettings() {
-    get('currency').value = data.settings.currency || 'INR';
-    get('notificationCopyInput').value = data.settings.notificationCopy || '';
-  }
-  function renderAll() { renderSchedule(); renderSubjects(); renderTasks(); renderStudy(); renderExpenses(); renderLifestyle(); renderSettings(); }
-  function updateSelects() { ['scheduleSubject', 'taskSubject', 'studySubject'].forEach(id => { if (get(id)) fillSubjectSelect(get(id), id !== 'studySubject'); }); }
+  function renderSettings() { get('notificationCopyInput').value = data.settings.notificationCopy || ''; }
+  function renderAll() { renderSchedule(); renderSubjects(); renderTasks(); renderStudy(); renderSettings(); }
+  function updateSelects() { if (get('studySubject')) fillSubjectSelect(get('studySubject'), false); }
   function focusActive() {
     if (window.AURA_FOCUS_ACTIVE) return true;
     try { const focus = JSON.parse(localStorage.getItem('aura_focus_studio_v1') || '{}'); return Boolean(focus.running); } catch { return false; }
@@ -235,9 +225,9 @@ export function initPlanner(api, getAccount) {
   // Browsers require a user gesture before scheduled audio is allowed.
   window.addEventListener('pointerdown', unlockReminderAudio, { once: true, passive: true });
   window.addEventListener('keydown', unlockReminderAudio, { once: true });
-  function notify(title, body) {
+  function notify(title, body, alarm = false) {
     if (focusActive()) return;
-    playReminderAlarm();
+    if (alarm) playReminderAlarm();
     if (!('Notification' in window) || Notification.permission !== 'granted') { toast(body); return; }
     const options = { body, icon: '/aura-icon-192.png', tag: `aura-${title.slice(0,40)}`, renotify: true, vibrate: [450, 180, 450, 180, 800] };
     navigator.serviceWorker?.getRegistration().then(registration => registration?.showNotification ? registration.showNotification(title, options) : new Notification(title, options)).catch(() => new Notification(title, options));
@@ -254,11 +244,9 @@ export function initPlanner(api, getAccount) {
     for (const task of data.tasks) {
       if (task.done) continue;
       const alarmDue = task.alarmAt && !task.alarmFired && new Date(task.alarmAt).getTime() <= now;
-      const repeatDue = task.reminderHours && task.nextReminderAt && task.nextReminderAt <= now;
-      if (!alarmDue && !repeatDue) continue;
-      notify('AURA · a little nudge', reminderText(task));
+        if (!alarmDue) continue;
+      notify('AURA · a little nudge', reminderText(task), task.reminderType === 'alarm');
       if (alarmDue) task.alarmFired = true;
-      if (repeatDue) task.nextReminderAt = now + task.reminderHours * 3600_000;
       changed = true;
     }
     if (changed) persist();
@@ -320,7 +308,7 @@ export function initPlanner(api, getAccount) {
     if (!title || (!days.length && !(existing && existing.date))) return toast('Choose an activity and at least one day.');
     const start = get('scheduleStart').value, end = get('scheduleEnd').value;
     if (end <= start) return toast('The end time must come after the start time.');
-    const values = { title, subjectId: get('scheduleSubject').value, days: existing?.date ? existing.days : days, start, end, kind: get('scheduleKind').value };
+    const values = { title, subjectId: '', days: existing?.date ? existing.days : days, start, end, kind: 'Class' };
     if (existing) Object.assign(existing, values);
     else data.schedule.push({ id: id(), ...values });
     const wasEditing = Boolean(existing); editingScheduleId = null;
@@ -330,8 +318,8 @@ export function initPlanner(api, getAccount) {
   function editScheduleEntry(event) {
     const button = event.target.closest('[data-edit-schedule]'); if (!button) return;
     const item = data.schedule.find(entry => entry.id === button.dataset.editSchedule); if (!item) return;
-    editingScheduleId = item.id; get('scheduleTitle').value = item.title; get('scheduleSubject').value = item.subjectId || '';
-    get('scheduleKind').value = item.kind || 'Class'; get('scheduleStart').value = item.start; get('scheduleEnd').value = item.end;
+    editingScheduleId = item.id; get('scheduleTitle').value = item.title;
+    get('scheduleStart').value = item.start; get('scheduleEnd').value = item.end;
     get('scheduleDays').querySelectorAll('input').forEach(input => { input.checked = item.days.includes(Number(input.value)); });
     get('scheduleSubmit').textContent = 'Save routine'; get('scheduleCancelEdit').hidden = false; get('scheduleForm').scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
@@ -383,53 +371,35 @@ export function initPlanner(api, getAccount) {
     });
   });
   get('subjectCancelEdit').addEventListener('click', () => { editingSubjectId = null; get('subjectForm').reset(); get('subjectColor').value = '#8b7cf6'; get('subjectFormTitle').textContent = 'Add a subject'; get('subjectSubmit').textContent = 'Add subject'; get('subjectCancelEdit').hidden = true; });
-  get('taskReminder').addEventListener('change', () => { const custom = get('taskReminder').value === 'custom'; get('taskReminderCustom').hidden = !custom; if (custom && !get('taskReminderCustom').value) get('taskReminderCustom').value = '2'; });
+
   get('taskForm').addEventListener('submit', event => {
     event.preventDefault(); const title = get('taskTitle').value.trim(); if (!title) return;
-    const alarmAt = get('taskAlarmAt').value;
-    if (alarmAt && new Date(alarmAt).getTime() <= Date.now()) return toast('Choose an alarm time in the future.');
-    const hours = get('taskReminder').value === 'custom' ? Number(get('taskReminderCustom').value) : Number(get('taskReminder').value);
-    if (!Number.isInteger(hours) || hours < 0 || hours > 168 || (get('taskReminder').value === 'custom' && hours < 1)) return toast('Choose a reminder interval from 1 to 168 hours.');
-    data.tasks.push({ id: id(), title, subjectId: get('taskSubject').value, kind: get('taskKind').value, deadline: get('taskDeadline').value, alarmAt: alarmAt ? new Date(alarmAt).toISOString() : null, alarmFired: false, done: false, reminderHours: hours, nextReminderAt: hours ? Date.now() + hours * 3600_000 : null, createdAt: Date.now() });
-    event.currentTarget.reset(); get('taskReminderCustom').hidden = true; persist(() => { renderTasks(); renderSubjects(); }); toast(alarmAt ? 'Task saved · alarm scheduled' : hours ? 'Task saved · repeating reminder scheduled' : 'Task saved to your deadlines');
+    const scheduledAt = get('taskDeadline').value;
+    const reminderType = get('taskReminder').value;
+    if (reminderType !== 'none' && !scheduledAt) return toast('Choose a date and time for the reminder.');
+    if (scheduledAt && new Date(scheduledAt).getTime() <= Date.now()) return toast('Choose a time in the future.');
+    data.tasks.push({ id: id(), title, subjectId: '', kind: 'task', deadline: scheduledAt || '', alarmAt: scheduledAt && reminderType !== 'none' ? new Date(scheduledAt).toISOString() : null, reminderType, alarmFired: false, done: false, createdAt: Date.now() });
+    event.currentTarget.reset(); persist(() => { renderTasks(); });
+    toast(reminderType === 'none' ? 'Task saved' : `Task saved · ${reminderType} scheduled`);
   });
   get('plannerTaskList').addEventListener('click', event => {
     const toggle = event.target.closest('[data-toggle-task]');
-    if (toggle) { const task = data.tasks.find(x => x.id === toggle.dataset.toggleTask); if (task) { task.done = !task.done; persist(() => { renderTasks(); renderSubjects(); }); toast(task.done ? 'Task completed · nice work' : 'Task reopened'); } return; }
+    if (toggle) { const task = data.tasks.find(x => x.id === toggle.dataset.toggleTask); if (task) { task.done = !task.done; persist(renderTasks); toast(task.done ? 'Task completed · nice work' : 'Task reopened'); } return; }
     const remove = event.target.closest('[data-remove-task]');
     if (remove) {
       const task = data.tasks.find(item => item.id === remove.dataset.removeTask);
       confirmDelete(task?.title || 'this task', () => {
         data.tasks = data.tasks.filter(item => item.id !== remove.dataset.removeTask);
-        persist(() => { renderTasks(); renderSubjects(); });
+        persist(renderTasks);
       });
     }
   });
   get('studyForm').addEventListener('submit', event => {
     event.preventDefault(); const subjectId = get('studySubject').value, minutes = Number(get('studyMinutes').value);
     if (!subjectId || !minutes) return toast('Choose a subject and enter study time.');
-    data.studyLogs.push({ id: id(), subjectId, date: get('studyDate').value || appDate(), minutes, topic: get('studyTopic').value.trim() });
+    data.studyLogs.push({ id: id(), subjectId, date: get('studyDate').value || appDate(), minutes, topic: get('studyTopic').value.trim(), source: 'manual' });
     get('studyTopic').value = ''; get('studyMinutes').value = ''; persist(() => { renderStudy(); renderSubjects(); }); toast('Study session logged');
   });
-  get('expenseForm').addEventListener('submit', event => {
-    event.preventDefault(); const amount = Number(get('expenseAmount').value); if (!amount || amount < 0) return;
-    data.expenses.push({ id: id(), date: get('expenseDate').value || appDate(), amount, category: get('expenseCategory').value, note: get('expenseNote').value.trim() });
-    get('expenseAmount').value = ''; get('expenseNote').value = ''; persist(renderExpenses); toast('Expense added');
-  });
-  get('expenseRows').addEventListener('click', event => {
-    const button = event.target.closest('[data-remove-expense]'); if (!button) return;
-    const expense = data.expenses.find(item => item.id === button.dataset.removeExpense);
-    const label = [expense?.category, expense?.note].filter(Boolean).join(' · ') || 'this expense';
-    confirmDelete(label, () => {
-      data.expenses = data.expenses.filter(item => item.id !== button.dataset.removeExpense);
-      persist(renderExpenses);
-    });
-  });
-  get('lifestyleForm').addEventListener('submit', event => {
-    event.preventDefault(); const row = { date: get('lifeDate').value || appDate(), sleep: Number(get('lifeSleepInput').value) || 0, water: Number(get('lifeWaterInput').value) || 0, movement: Number(get('lifeMovementInput').value) || 0, calories: Number(get('lifeCaloriesInput').value) || 0, steps: Number(get('lifeStepsInput').value) || 0, screenTime: Number(get('lifeScreenTimeInput').value) || 0, mood: Number(get('lifeMood').value) || 3 };
-    data.lifestyle = data.lifestyle.filter(item => item.date !== row.date); data.lifestyle.push(row); persist(renderLifestyle); toast('Daily check-in saved');
-  });
-  get('currency').addEventListener('change', () => { data.settings.currency = get('currency').value; persist(renderExpenses); });
   get('notificationCopyInput').addEventListener('change', () => { data.settings.notificationCopy = get('notificationCopyInput').value.trim().slice(0, 120); persist(renderSettings); });
   get('enableNotifications').addEventListener('click', async () => {
     unlockReminderAudio();
@@ -442,7 +412,7 @@ export function initPlanner(api, getAccount) {
   window.addEventListener('focus', checkReminders);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) checkReminders(); });
   reminderTimer = setInterval(checkReminders, 10_000);
-  renderAll(); get('studyDate').value = appDate(); get('expenseDate').value = appDate();
+  renderAll(); get('studyDate').value = appDate();
   async function setAccount(account, options = {}) {
     const nextUser = account?.user?.id || null;
     if (options.signedOut) { localStorage.removeItem(LAST_USER_KEY); activeUser = null; }
@@ -493,7 +463,7 @@ export function initPlanner(api, getAccount) {
   function addTask({ title, deadline = '', subjectId = '' }) {
     const cleanTitle = String(title || '').trim().slice(0, 120);
     if (!cleanTitle) return false;
-    data.tasks.push({ id: id(), title: cleanTitle, deadline, subjectId, kind: 'task', reminderHours: 0, done: false, createdAt: Date.now() });
+    data.tasks.push({ id: id(), title: cleanTitle, deadline, subjectId: '', kind: 'task', reminderType: 'none', done: false, createdAt: Date.now() });
     persist();
     return true;
   }
@@ -501,7 +471,7 @@ export function initPlanner(api, getAccount) {
     if (!data.subjects.some(subject => subject.id === subjectId)) return false;
     const logId = `focus_${sessionId}_${segment}`;
     if (!data.studyLogs.some(log => log.id === logId)) {
-      data.studyLogs.push({ id: logId, subjectId, date: appDate(), minutes: 2, topic: 'Focus session' });
+      data.studyLogs.push({ id: logId, subjectId, date: appDate(), minutes: 2, topic: 'Focus session', source: 'focus' });
       persist(() => { renderStudy(); renderSubjects(); });
     }
     return true;

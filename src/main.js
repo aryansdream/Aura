@@ -1,6 +1,5 @@
 import { initPlanner } from './planner.js';
 import './planner.css';
-import { adjustedReward } from '../lib/progression.js';
 
 const $ = (id) => document.getElementById(id);
 const formatAP = (value) => (Number(value || 0) / 100).toFixed(2);
@@ -35,17 +34,15 @@ $('periodDate').value = `${localPeriodNow.getFullYear()}-${String(localPeriodNow
 $('periodYear').value = localPeriodNow.getFullYear();
 function viewFromHash() {
   const hash = location.hash.slice(1);
-  if (hash === 'tasks') return 'library';
-  return ['study', 'life', 'deadlines', 'devices', 'leaderboard', 'info'].includes(hash) ? hash : 'home';
+  const aliases = { tasks: 'deadlines', study: 'subjects', life: 'home', library: 'home' };
+  const view = aliases[hash] || hash;
+  return ['focus', 'subjects', 'schedule', 'deadlines', 'devices', 'leaderboard', 'info'].includes(view) ? view : 'home';
 }
 function setView(view) {
-  const library = view === 'library';
-  $('homeView').hidden = library;
-  $('libraryView').hidden = !library;
+  const topLevel = ['leaderboard', 'info'].includes(view);
+  $('homeView').hidden = topLevel;
   $('leaderboardView').hidden = view !== 'leaderboard';
   $('infoView').hidden = view !== 'info';
-  const studyLifeSummary = document.querySelector('[aria-labelledby="studySummaryTitle"]');
-  if (studyLifeSummary) studyLifeSummary.hidden = !['study', 'life'].includes(view);
   document.querySelectorAll('[data-page]').forEach(section => { section.hidden = !section.dataset.page.split(/\s+/).includes(view); });
   document.querySelectorAll('.view-tab').forEach((button) => {
     const active = button.dataset.view === view;
@@ -53,11 +50,10 @@ function setView(view) {
     if (active) button.setAttribute('aria-current', 'page');
     else button.removeAttribute('aria-current');
   });
-  if (library) renderTasks();
   if (view === 'leaderboard') refreshLeaderboard();
 }
 document.querySelectorAll('.view-tab').forEach((button) => {
-  button.addEventListener('click', () => { location.hash = button.dataset.view === 'library' ? 'tasks' : button.dataset.view; });
+  button.addEventListener('click', () => { location.hash = button.dataset.view; });
 });
 window.addEventListener('hashchange', () => setView(viewFromHash()));
 setView(viewFromHash());
@@ -172,23 +168,20 @@ const authCall = async (path, body = {}) => {
 };
 const planner = initPlanner(api, () => account);
 const priorityTools = $('homePriorityTools');
-priorityTools.append($('trackerBox'), document.querySelector('.focus-studio'));
-document.querySelector('.home-tools summary').textContent = 'More tools';
-window.addEventListener('aura:points-updated', event => { pending = Number(event.detail?.pending ?? pending); if (event.detail?.total !== undefined) state.total = Number(event.detail.total); refreshPending(); reloadAccount(); });
-window.addEventListener('aura:combo-awarded', event => { const award = event.detail; if (award?.addedPoints) { toast(`${award.name} combo · +${formatAP(award.addedPoints)} AP`); reloadAccount(); refreshLeaderboard(); } });
+window.addEventListener('aura:points-updated', () => reloadAccount());
 // Focus time accrues only while the full-screen focus surface is visible.
 const focusStoreKey = 'aura_focus_studio_v1';
 const focusPointIntervalSeconds = 120;
 const focusDay = new Date(); focusDay.setHours(focusDay.getHours() - 2); const focusToday = `${focusDay.getFullYear()}-${String(focusDay.getMonth()+1).padStart(2,'0')}-${String(focusDay.getDate()).padStart(2,'0')}`;
 let focusState;
 try { focusState = JSON.parse(localStorage.getItem(focusStoreKey)) || {}; } catch { focusState = {}; }
-if (focusState.date !== focusToday) focusState = { date: focusToday, minutes: 25, remaining: 25 * 60, completed: 0, running: false, pendingAwards: focusState.pendingAwards || [] };
+if (focusState.date !== focusToday) focusState = { date: focusToday, minutes: 25, remaining: 25 * 60, completed: 0, running: false, pendingAwards: [] };
 focusState.minutes = Number.isInteger(Number(focusState.minutes)) && Number(focusState.minutes) >= 1 && Number(focusState.minutes) <= 180 ? Number(focusState.minutes) : 25;
 focusState.remaining = Math.max(0, Math.min(focusState.minutes * 60, Number(focusState.remaining) || focusState.minutes * 60));
 focusState.completed = Math.max(0, Number(focusState.completed) || 0);
 focusState.activeSeconds = Math.max(0, Number(focusState.activeSeconds) || 0);
 focusState.awardedSegments = Math.max(0, Number(focusState.awardedSegments) || 0);
-focusState.pendingAwards = Array.isArray(focusState.pendingAwards) ? focusState.pendingAwards : [];
+focusState.pendingAwards = []; // Remove old non-Focus reward requests.
 focusState.sessionId = typeof focusState.sessionId === 'string' ? focusState.sessionId : '';
 focusState.subjectId = typeof focusState.subjectId === 'string' ? focusState.subjectId : '';
 // Start a fresh point segment when upgrading from the old five-minute award cadence.
@@ -228,8 +221,8 @@ async function syncFocusAwards() {
   try {
     while (focusState.pendingAwards.length && account) {
       const result = await api('/api/planner', { action: 'focus-point', ...focusState.pendingAwards[0] });
-      focusState.pendingAwards.shift(); pending = Number(result.pending ?? pending);
-      state.total = Number(result.total ?? state.total); persistFocus(); refreshPending(); reloadAccount();
+      focusState.pendingAwards.shift();
+      state.total = Number(result.total ?? state.total); persistFocus(); reloadAccount();
     }
   } catch (error) {
     if (error.status === 409) { focusState.pendingAwards.shift(); persistFocus(); toast(error.message); }
@@ -318,7 +311,7 @@ $('focusToggle').addEventListener('click', () => {
     focusState.running = true; focusInterval = window.setInterval(tickFocus, 1000);
   }
   persistFocus(); renderFocus();
-  if (!focusState.running) { window.dispatchEvent(new Event('focus')); window.setTimeout(checkValidationReminder, 250); window.setTimeout(showTomorrowPlan, 450); }
+  if (!focusState.running) window.dispatchEvent(new Event('focus'));
 });
 $('focusLaunch').addEventListener('click', () => {
   if (!mobileFocusAvailable) return;
@@ -399,15 +392,10 @@ async function refreshLeaderboard() {
   try {
     const { entries } = await api('/api/leaderboard');
     $('leaderboardList').innerHTML = entries.map((entry, i) => `<div class="leader-entry"><span>${i + 1}. ${i === 0 ? `${escapeHtml(entry.title || 'Champion')} ` : ''}${escapeHtml(entry.name)}</span><b>${formatAP(entry.points)} AP</b></div>`).join('') || '<p class="help">No validated scores yet.</p>';
-    $('leaderNotice').textContent = 'Class and focus study points count immediately; mission points count after tracker validation.';
+    $('leaderNotice').textContent = 'Only Focus timer sessions earn Aura Points.';
   } catch { $('leaderboardList').innerHTML = '<p class="help">Leaderboard unavailable right now.</p>'; }
 }
 function escapeHtml(value) { return String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-function refreshPending() {
-  let el = $('pendingPoints');
-  if (!el) { el = document.createElement('span'); el.id = 'pendingPoints'; el.className = 'pending-ap'; $('totalAP').insertAdjacentElement('afterend', el); }
-  el.textContent = pending ? `${formatAP(pending)} mission AP awaiting today’s tracker` : '';
-}
 function renderPeriodTracker() {
   const selectedMonth = $('periodDate').value || `${localPeriodNow.getFullYear()}-${String(localPeriodNow.getMonth() + 1).padStart(2, '0')}`;
   const selectedYear = Number($('periodYear').value) || localPeriodNow.getFullYear();
@@ -427,7 +415,7 @@ function renderPeriodTracker() {
   const max = Math.max(1, ...buckets.map(item => item.tasks));
   $('periodChart').innerHTML = buckets.map((item, index) => `<div class="period-bar${item.tasks ? ' active' : ''}" style="height:${Math.max(2, item.tasks / max * 100)}%" title="${periodMode === 'month' ? `${selectedMonth}-${String(index + 1).padStart(2, '0')}` : new Date(selectedYear, index).toLocaleString(undefined, { month: 'long' })}: ${item.tasks} verified tasks · ${formatAP(item.points)} AP"></div>`).join('');
   $('periodLabels').innerHTML = periodMode === 'month' ? `<span>1</span><span>${Math.ceil(count / 2)}</span><span>${count}</span>` : '<span>Jan</span><span>Apr</span><span>Aug</span><span>Dec</span>';
-  $('periodNote').textContent = account ? (rows.length ? `${periodMode === 'month' ? new Date(`${selectedMonth}-01T12:00:00`).toLocaleString(undefined, { month: 'long', year: 'numeric' }) : selectedYear} · verified records only; unsubmitted days are not included.` : `No verified activity for ${periodMode === 'month' ? selectedMonth : selectedYear} yet.`) : 'Sign in to see your monthly and yearly history. Only tracker-verified days count.';
+  $('periodNote').textContent = account ? (rows.length ? `${periodMode === 'month' ? new Date(`${selectedMonth}-01T12:00:00`).toLocaleString(undefined, { month: 'long', year: 'numeric' }) : selectedYear} · Focus timer records only.` : `No Focus timer activity for ${periodMode === 'month' ? selectedMonth : selectedYear} yet.`) : 'Sign in to sync Focus timer points across devices.';
 }
 document.querySelectorAll('[data-period]').forEach(button => button.addEventListener('click', () => {
   periodMode = button.dataset.period;
@@ -436,41 +424,6 @@ document.querySelectorAll('[data-period]').forEach(button => button.addEventList
 }));
 $('periodDate').addEventListener('change', renderPeriodTracker);
 $('periodYear').addEventListener('change', renderPeriodTracker);
-const validationPrefsKey = 'aura_validation_reminder_v1';
-let validationPrefs = { mode: 'manual', time: '20:00' };
-try { validationPrefs = { ...validationPrefs, ...JSON.parse(localStorage.getItem(validationPrefsKey) || '{}') }; } catch {}
-function renderValidationReminder() {
-  $('validationReminder').value = validationPrefs.mode;
-  $('validationReminderTime').value = validationPrefs.time || '20:00';
-  $('validationReminderTime').hidden = validationPrefs.mode !== 'custom';
-  $('validationReminderStatus').textContent = validationPrefs.mode === 'manual'
-    ? 'Your class and focus study points count immediately. Submit your report to validate mission points.'
-    : 'AURA checks this reminder while open. Class and focus study points count immediately; mission points validate after your report.';
-}
-function checkValidationReminder() {
-  if (!account || account.proof || window.AURA_FOCUS_ACTIVE || validationPrefs.mode === 'manual') return;
-  const now = new Date(), hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-  const due = validationPrefs.mode === 'day-end' ? hhmm >= '01:50' && hhmm < '02:00' : hhmm >= (validationPrefs.time || '20:00');
-  if (!due) return;
-  const key = `aura_validation_reminded_${account.user.id}_${today()}`;
-  if (localStorage.getItem(key) === today()) return;
-  localStorage.setItem(key, today());
-  toast('Ready to validate today’s points? Add your screen-time report when you are.');
-}
-$('validationReminder').addEventListener('change', () => { validationPrefs.mode = $('validationReminder').value; localStorage.setItem(validationPrefsKey, JSON.stringify(validationPrefs)); renderValidationReminder(); checkValidationReminder(); });
-$('validationReminderTime').addEventListener('change', () => { validationPrefs.time = $('validationReminderTime').value || '20:00'; localStorage.setItem(validationPrefsKey, JSON.stringify(validationPrefs)); renderValidationReminder(); checkValidationReminder(); });
-renderValidationReminder();
-window.setInterval(checkValidationReminder, 60_000);
-window.addEventListener('focus', checkValidationReminder);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) checkValidationReminder(); });
-function showTracker(proof) {
-  renderValidationReminder();
-  $('trackerStatus').textContent = proof ? `Tracker checked · ${Math.ceil(proof.size_bytes / 1024)} KB · screenshot discarded · mission points validated${Number(proof.balance_bonus) ? ' · +0.25 AP balance bonus' : ''}.` : (account ? 'Submit at day’s end to validate mission points and claim any balance bonus. Class and focus study points count immediately.' : 'Sign in to submit a tracker.');
-  $('trackerStatus').className = `help ${proof ? 'tracker-ok' : ''}`;
-  $('trackerFile').disabled = !account || !!proof;
-  $('trackerForm').querySelector('button').disabled = !account || !!proof;
-  $('trackerForm').querySelector('button').textContent = proof ? 'Tracker submitted' : 'Submit today’s tracker';
-}
 function appDatePlus(days) {
   const date = new Date(); date.setHours(date.getHours() - 2); date.setDate(date.getDate() + days);
   const datePart = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
@@ -482,7 +435,7 @@ function planRows(rows, readonly = false) {
   $('tomorrowAddRow').hidden = readonly;
 }
 function showTomorrowPlan() {
-  if (!account?.proof || !account.user?.id || window.AURA_FOCUS_ACTIVE || $('tomorrowPlanDialog').open) return;
+  if (!account?.user?.id || window.AURA_FOCUS_ACTIVE || $('tomorrowPlanDialog').open) return;
   const day = today(), user = account.user.id, savedKey = `aura_tomorrow_schedule_saved_${user}`;
   const sessionKey = `aura_tomorrow_schedule_later_${user}_${day}`;
   if (localStorage.getItem(savedKey) === day || sessionStorage.getItem(sessionKey) === day) return;
@@ -528,39 +481,25 @@ function showAccount(data, options = {}) {
   planner.setAccount(data, options).then(() => { renderFocusSubjects(); syncFocusAwards(); });
   verifiedHistory = data?.history || [];
   renderPeriodTracker();
-  window.AURA_PROOF_SUBMITTED = !!data?.proof;
-  window.AURA_BALANCE_BONUS = Number(data?.proof?.balance_bonus || 0);
-  for (const task of data?.customTasks || []) {
-    if (!window.AURA_CATALOG.some(item => item.id === task.id)) window.AURA_CATALOG.unshift({ ...task, difficulty: task.difficulty || 'Moderate', icon: task.icon || '✳' });
-  }
   $('authState').textContent = data ? 'Signed in' : 'Local preview';
   $('accountName').textContent = data?.profile?.display_name || 'Account';
   $('avatar').textContent = (data?.profile?.display_name || state.name || 'A').trim().slice(0, 1).toUpperCase();
   $('authOpen').hidden = !!data;
   $('authOut').hidden = !data;
   $('displayName').disabled = false;
-  $('leaderName').textContent = data ? data.profile.display_name : 'Sign in';
-  $('leaderCaption').textContent = data ? 'Your validated score' : 'Registered AURA scores';
-  $('leaderAP').textContent = data ? `${formatAP(data.stats.total)} AP` : '— AP';
   $('saveState').textContent = data ? 'Progress synced to your account' : 'Sign in to sync across devices';
-  if (!data) { showTracker(null); refreshLeaderboard(); return; }
+  if (!data) { refreshLeaderboard(); return; }
   state.name = data.profile.display_name;
   state.total = Number(data.stats.total || 0);
-  pending = Number(data.stats.pending || 0);
-  window.AURA_BALANCE_AREAS = Number(data.balanceAreas || 0);
-  state.missions = data.today.map(item => {
-    const task = window.AURA_CATALOG.find(t => t.id === item.task_id);
-    const points = Number(item.points) || adjustedReward(task?.points || 1, state.total);
-    return { key: `${item.task_id}-${today()}`, id: item.task_id, title: task?.title || item.title || 'AURA mission', category: task?.category || item.category || 'Mission', points, date: today(), done: item.done };
-  });
+  pending = 0;
+  state.todayFocus = Number(data.stats.today || 0);
   const days = data.days || [];
   let streak = 0, expected = today();
   for (const day of days) { if (day !== expected) break; streak++; const d = new Date(`${expected}T00:00:00Z`); d.setUTCDate(d.getUTCDate() - 1); expected = d.toISOString().slice(0,10); }
   state.streak = streak;
   $('displayName').value = state.name;
-  save(); renderTasks(); renderMissions(); refreshPending(); showTracker(data.proof);
+  save();
   refreshLeaderboard();
-  checkValidationReminder();
   window.setTimeout(showTomorrowPlan, 400);
 }
 async function reloadAccount() {
@@ -612,64 +551,6 @@ $('authOut').addEventListener('click', async () => {
   $('accountMenu').open = false; showAccount(null, { signedOut: true }); toast('Signed out');
 });
 
-// Route signed-in writes through the server. The existing local-only behavior remains
-// available for visitors who have not created an account.
-$('missionLibraryList').addEventListener('click', async (event) => {
-  if (!account) return;
-  const button = event.target.closest('[data-id]');
-  if (!button) return;
-  event.preventDefault(); event.stopImmediatePropagation();
-  const task = window.AURA_CATALOG.find(t => t.id === button.dataset.id);
-  if (!task) return;
-  button.disabled = true;
-  try {
-    const { task: selectedTask } = await api('/api/select', { taskId: task.id });
-    state.missions.push({ key: `${task.id}-${today()}`, id: task.id, title: task.title, category: task.category, points: selectedTask.points, date: today(), done: false });
-    save(); renderTasks(); renderMissions(); toast('Mission added to today’s promises');
-  } catch (error) { button.disabled = false; toast(error.message); }
-}, true);
-$('missions').addEventListener('click', async (event) => {
-  if (!account) return;
-  const removeButton = event.target.closest('[data-remove-mission]');
-  if (removeButton) {
-    event.preventDefault(); event.stopImmediatePropagation();
-    const mission = state.missions.find(item => item.key === removeButton.dataset.removeMission);
-    if (!mission) return;
-    removeButton.disabled = true;
-    try {
-      await api('/api/select', { action: 'remove', taskId: mission.id });
-      state.missions = state.missions.filter(item => item.key !== mission.key);
-      save(); renderMissions(); renderTasks();
-    } catch (error) { removeButton.disabled = false; toast(error.message); }
-    return;
-  }
-  const button = event.target.closest('[data-check]');
-  if (!button) return;
-  event.preventDefault(); event.stopImmediatePropagation();
-  const mission = state.missions.find(item => item.key === button.dataset.check);
-  if (!mission || mission.done) return;
-  button.disabled = true;
-  try {
-    const result = await api('/api/complete', { taskId: mission.id });
-    mission.done = true; state.total = result.total; pending = result.pending;
-    save(); renderMissions(); renderTasks(); refreshPending(); refreshLeaderboard();
-    reloadAccount();
-    toast(`+${formatAP(result.points)} AP pending tracker validation`);
-  } catch (error) { button.disabled = false; toast(error.message); }
-}, true);
-$('customForm').addEventListener('submit', async (event) => {
-  if (!account) return;
-  event.preventDefault(); event.stopImmediatePropagation();
-  const title = $('customTitle').value.trim();
-  const difficulty = $('customDifficulty').value;
-  try {
-    const { task } = await api('/api/custom', { title, difficulty });
-    window.AURA_CATALOG.unshift(task);
-    $('customTitle').value = '';
-    if (!$('category').querySelector('option[value="Your own"]')) $('category').insertAdjacentHTML('beforeend', '<option value="Your own">Your own</option>');
-    $('category').value = 'all'; $('search').value = ''; renderTasks(); toast(`Custom mission saved · up to ${formatAP(task.points)} AP`);
-  } catch (error) { toast(error.message); }
-}, true);
 async function saveDisplayName() {
   const name = $('displayName').value.trim().slice(0, 24);
   if (!name) { $('displayName').value = state.name || 'Aura Explorer'; return; }
@@ -679,17 +560,6 @@ async function saveDisplayName() {
 }
 $('displayName').addEventListener('change', saveDisplayName);
 $('saveName').addEventListener('click', () => $('displayName').dispatchEvent(new Event('change', { bubbles: true })));
-$('trackerForm').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  const file = $('trackerFile').files[0];
-  if (!file || !account) return;
-  if (file.size > 2.5 * 1024 * 1024) return toast('Choose a screenshot under 2.5 MB.');
-  const button = event.currentTarget.querySelector('button'); button.disabled = true; button.textContent = 'Submitting…';
-  try {
-    const data = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = () => reject(new Error('Could not read that screenshot.')); reader.readAsDataURL(file); });
-    const result = await api('/api/proof', { mime: file.type, data });
-    toast(`${result.todayPoints} Aura Points validated`); await reloadAccount();
-  } catch (error) { button.disabled = false; button.textContent = 'Submit today’s tracker'; toast(error.message); }
-});
+
 
 reloadAccount();
