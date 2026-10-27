@@ -503,12 +503,13 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
     val alarmManager = context.getSystemService(AlarmManager::class.java)
     fun taskNotificationsAllowed(): Boolean {
         if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return false
-        val channelId = if (reminderType == "alarm") "aura_ringing_task_alarm" else "aura_task_notifications"
+        val channelId = if (reminderType == "alarm") "aura_ringing_task_alarm" else "aura_task_notifications_v2"
         val channel = context.getSystemService(android.app.NotificationManager::class.java).getNotificationChannel(channelId)
         return channel == null || channel.importance != android.app.NotificationManager.IMPORTANCE_NONE
     }
     var hasExactPermission by remember { mutableStateOf(Build.VERSION.SDK_INT < Build.VERSION_CODES.S || alarmManager.canScheduleExactAlarms()) }
     var notificationsEnabled by remember { mutableStateOf(taskNotificationsAllowed()) }
+    var testMessage by remember { mutableStateOf("") }
     LaunchedEffect(Unit) {
         while (true) {
             hasExactPermission = Build.VERSION.SDK_INT < Build.VERSION_CODES.S || alarmManager.canScheduleExactAlarms()
@@ -552,22 +553,37 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
             Text(if (reminderType == "alarm") "Rings with your alarm tone and vibration until you tap Stop." else if (reminderType == "notification") "Plays a short notification beep at the scheduled time." else "No reminder will be sent.", color = Muted, fontSize = 11.sp)
             if (taskError.isNotBlank()) Text(taskError, color = Color(0xFFFF8D8D), fontSize = 11.sp)
         }
-        if (reminderType in setOf("notification", "alarm") && !hasExactPermission) item {
+        if (reminderType == "alarm" && !hasExactPermission) item {
             Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) {
                 Column(Modifier.fillMaxWidth().padding(14.dp)) {
                     Text("Allow alarms & reminders", fontWeight = FontWeight.SemiBold)
-                    Text("Android requires this access for AURA to trigger alarms and notifications at the time you set.", color = Muted, fontSize = 11.sp)
+                    Text("Android needs this special access for a ringing alarm at the exact time you choose. Without it, Android may delay the alarm.", color = Muted, fontSize = 11.sp)
                     TextButton(onClick = {
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) runCatching { context.startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, android.net.Uri.parse("package:${context.packageName}"))) }
                     }) { Text("Open Android settings") }
                 }
             }
         }
+        item {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = {
+                    testMessage = when {
+                        !notificationsEnabled -> "Allow AURA notifications in Android settings, then test again."
+                        TaskReminderReceiver.testNotification(context) -> "Test notification sent. Check sound and notification settings if it stayed silent."
+                        else -> "Android blocked the test notification. Check AURA's notification permission."
+                    }
+                }, modifier = Modifier.weight(1f)) { Text("Test beep") }
+                OutlinedButton(onClick = {
+                    testMessage = if (TaskAlarmService.startTest(context)) "Test alarm started. Stop it from its notification." else "Android blocked the alarm service. Check AURA notification and battery settings."
+                }, modifier = Modifier.weight(1f)) { Text("Test ringing alarm") }
+            }
+            if (testMessage.isNotBlank()) Text(testMessage, color = Purple, fontSize = 11.sp)
+        }
         item { Button(onClick = {
             if (title.trim().isEmpty()) return@Button
             if (!scheduledAt.isAfter(LocalDateTime.now())) { taskError = "Choose a time in the future."; return@Button }
             if (reminderType != "none" && !notificationsEnabled) { taskError = "Enable notifications in Android settings first."; return@Button }
-            if (reminderType != "none" && !hasExactPermission) { taskError = "Allow Alarms & reminders in Android settings before scheduling this."; return@Button }
+            if (reminderType == "alarm" && !hasExactPermission) { taskError = "Allow Alarms & reminders in Android settings before scheduling a ringing alarm."; return@Button }
             taskError = ""
             val updated = JSONArray(); for (i in 0 until tasks.length()) tasks.optJSONObject(i)?.let(updated::put)
             val dateTime = scheduledAt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm"))

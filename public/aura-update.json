@@ -1,9 +1,9 @@
 {
-  "versionCode": 22,
-  "versionName": "1.3.0",
-  "apkUrl": "https://aura-day-tracker.vercel.app/aura-android-1.3.0-master.apk",
-  "sha256": "552a4462021760403c1d3b23b1e6c5bb94ee24269b2364da95a41d12d25e1e9a",
-  "releaseNotes": "Master build adds optional social app blocking, social notification blocking, configurable animated water reminders, and update notifications.",
+  "versionCode": 23,
+  "versionName": "1.3.1",
+  "apkUrl": "https://aura-day-tracker.vercel.app/aura-android-1.3.1-master.apk",
+  "sha256": "c120a45c8c38e6c57bdd16c65dc400aba29207c9325cfce2e498647324c14551",
+  "releaseNotes": "Master update improves focus blocker stability, adds notification and alarm test controls, and lets notification reminders work without exact-alarm access.",
   "defaultVersionName": "1.1.8",
   "defaultApkUrl": "https://aura-day-tracker.vercel.app/aura-android-1.1.8.apk"
 }

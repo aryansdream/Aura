@@ -113,5 +113,10 @@ class TaskAlarmService : Service() {
         const val ACTION_STOP = "com.aryansdream.aura.STOP_TASK_ALARM"
         private const val CHANNEL = "aura_ringing_task_alarm"
         private const val NOTIFICATION_ID = 711
+
+        fun startTest(context: android.content.Context): Boolean = runCatching {
+            val intent = Intent(context, TaskAlarmService::class.java).putExtra("title", "AURA alarm test")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent) else context.startService(intent)
+        }.isSuccess
     }
 }

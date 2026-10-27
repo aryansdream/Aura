@@ -191,38 +191,40 @@ class TaskReminderReceiver : BroadcastReceiver() {
             runCatching { if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(alarm) else context.startService(alarm) }
             return
         }
-        val manager = context.getSystemService(NotificationManager::class.java)
-        val channelId = if (type == "alarm") ALARM_CHANNEL else NOTIFICATION_CHANNEL
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && manager.getNotificationChannel(channelId) == null) {
-            val channel = NotificationChannel(channelId, if (type == "alarm") "Task alarms" else "Task notifications", if (type == "alarm") NotificationManager.IMPORTANCE_HIGH else NotificationManager.IMPORTANCE_DEFAULT)
-            channel.description = if (type == "alarm") "Sounding reminders for your scheduled tasks" else "Reminders for scheduled tasks"
-            if (type == "alarm") {
-                channel.enableVibration(true)
-                channel.vibrationPattern = longArrayOf(0, 700, 300, 700, 300, 1000)
-                channel.setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM), AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
-            } else {
-                channel.setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION), AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
-            }
-            manager.createNotificationChannel(channel)
-        }
-        val open = PendingIntent.getActivity(context, 0, Intent(context, MainActivity::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val notification = NotificationCompat.Builder(context, channelId)
-            .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
-            .setContentTitle(if (type == "alarm") "AURA task alarm" else "AURA task reminder")
-            .setContentText(title)
-            .setContentIntent(open)
-            .setAutoCancel(true)
-            .setCategory(if (type == "alarm") NotificationCompat.CATEGORY_ALARM else NotificationCompat.CATEGORY_REMINDER)
-            .setPriority(if (type == "alarm") NotificationCompat.PRIORITY_MAX else NotificationCompat.PRIORITY_DEFAULT)
-            .setDefaults(if (type == "alarm") NotificationCompat.DEFAULT_VIBRATE else NotificationCompat.DEFAULT_SOUND)
-            .setVibrate(if (type == "alarm") longArrayOf(0, 700, 300, 700, 300, 1000) else null)
-            .build()
-        manager.notify(intent.getStringExtra("id").orEmpty().hashCode(), notification)
+        showNotification(context, intent.getStringExtra("id").orEmpty().hashCode(), title)
     }
 
     companion object {
-        private const val NOTIFICATION_CHANNEL = "aura_task_notifications"
-        private const val ALARM_CHANNEL = "aura_task_alarms_v2"
+        private const val NOTIFICATION_CHANNEL = "aura_task_notifications_v2"
+
+        fun testNotification(context: Context): Boolean = runCatching {
+            showNotification(context, 719, "AURA notification test")
+        }.getOrDefault(false)
+
+        private fun showNotification(context: Context, notificationId: Int, title: String): Boolean {
+            val manager = context.getSystemService(NotificationManager::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && manager.getNotificationChannel(NOTIFICATION_CHANNEL) == null) {
+                val channel = NotificationChannel(NOTIFICATION_CHANNEL, "Task notifications", NotificationManager.IMPORTANCE_HIGH).apply {
+                    description = "Beep reminders for scheduled tasks"
+                    enableVibration(true)
+                    vibrationPattern = longArrayOf(0, 250, 150, 250)
+                    setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION), AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
+                }
+                manager.createNotificationChannel(channel)
+            }
+            val open = PendingIntent.getActivity(context, 0, Intent(context, MainActivity::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            val notification = NotificationCompat.Builder(context, NOTIFICATION_CHANNEL)
+                .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+                .setContentTitle("AURA task reminder")
+                .setContentText(title)
+                .setContentIntent(open)
+                .setAutoCancel(true)
+                .setCategory(NotificationCompat.CATEGORY_REMINDER)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setDefaults(NotificationCompat.DEFAULT_SOUND or NotificationCompat.DEFAULT_VIBRATE)
+                .build()
+            return runCatching { manager.notify(notificationId, notification); true }.getOrDefault(false)
+        }
     }
 }
 
