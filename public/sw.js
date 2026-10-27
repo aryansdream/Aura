@@ -1,4 +1,4 @@
-const CACHE = 'aura-shell-v2';
+const CACHE = 'aura-shell-v5';
 const CORE = ['/tasks.js', '/manifest.webmanifest', '/aura-icon-192.png', '/aura-icon-512.png', '/aura-maskable-512.png'];
 
 self.addEventListener('install', event => {
@@ -9,7 +9,8 @@ self.addEventListener('install', event => {
       const source = await page.clone().text();
       await cache.put('/', page);
       const modulePath = source.match(/src="(\/assets\/[^\"]+\.js)"/)?.[1];
-      const paths = [...CORE, ...(modulePath ? [modulePath] : [])];
+      const stylePath = source.match(/href="(\/assets\/[^\"]+\.css)"/)?.[1];
+      const paths = [...CORE, ...(modulePath ? [modulePath] : []), ...(stylePath ? [stylePath] : [])];
       await Promise.allSettled(paths.map(async path => {
         const response = await fetch(path, { cache: 'reload' });
         if (response.ok) await cache.put(path, response);

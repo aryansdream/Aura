@@ -1,13 +1,13 @@
 {
   "id": "/",
-  "name": "AURA \u2014 Make a little progress",
+  "name": "AURA — Daily planner & study tracker",
   "short_name": "AURA",
-  "description": "A personal field guide for the habits, work, and promises that make a life feel like your own.",
+  "description": "Plan your day, track your study, and keep your routine in one place.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#f3eee4",
-  "theme_color": "#f3eee4",
+  "background_color": "#f4f5f8",
+  "theme_color": "#f4f5f8",
   "categories": [
     "lifestyle",
     "health",
@@ -39,6 +39,32 @@
       "short_name": "Checklist",
       "description": "Open today's AURA missions checklist",
       "url": "/?widget=checklist",
+      "icons": [
+        {
+          "src": "/aura-icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Task scheduler",
+      "short_name": "Tasks",
+      "description": "Open your AURA tasks and deadlines",
+      "url": "/#deadlines",
+      "icons": [
+        {
+          "src": "/aura-icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Study tracker",
+      "short_name": "Study",
+      "description": "Open your subjects and study log",
+      "url": "/#study",
       "icons": [
         {
           "src": "/aura-icon-192.png",

@@ -1,6 +1,20 @@
+import { initPlanner } from './planner.js';
+import './planner.css';
 import { adjustedReward } from '../lib/progression.js';
 
 const $ = (id) => document.getElementById(id);
+const mobileFocusAvailable = Boolean(navigator.userAgentData?.mobile || /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1));
+document.documentElement.classList.toggle('focus-mobile-enabled', mobileFocusAvailable);
+const THEME_KEY = 'aura_theme_v1';
+function applyTheme(theme) {
+  const dark = theme === 'dark';
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  const button = $('themeToggle');
+  if (button) { button.textContent = dark ? 'Light mode' : 'Dark mode'; button.setAttribute('aria-label', `Switch to ${dark ? 'light' : 'dark'} mode`); button.setAttribute('aria-pressed', String(dark)); }
+  const meta = document.querySelector('meta[name="theme-color"]'); if (meta) meta.content = dark ? '#101116' : '#f4f5f8';
+}
+applyTheme(localStorage.getItem(THEME_KEY) || 'light');
+$('themeToggle').addEventListener('click', () => { const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; localStorage.setItem(THEME_KEY, next); applyTheme(next); });
 const checklistShortcut = new URLSearchParams(location.search).get('widget') === 'checklist';
 if (checklistShortcut) {
   document.body.classList.add('checklist-shortcut-mode');
@@ -18,10 +32,20 @@ let periodMode = 'month';
 const localPeriodNow = new Date();
 $('periodDate').value = `${localPeriodNow.getFullYear()}-${String(localPeriodNow.getMonth() + 1).padStart(2, '0')}`;
 $('periodYear').value = localPeriodNow.getFullYear();
+function viewFromHash() {
+  const hash = location.hash.slice(1);
+  if (hash === 'tasks') return 'library';
+  return ['study', 'life', 'deadlines', 'devices', 'leaderboard', 'info'].includes(hash) ? hash : 'home';
+}
 function setView(view) {
   const library = view === 'library';
   $('homeView').hidden = library;
   $('libraryView').hidden = !library;
+  $('leaderboardView').hidden = view !== 'leaderboard';
+  $('infoView').hidden = view !== 'info';
+  const studyLifeSummary = document.querySelector('[aria-labelledby="studySummaryTitle"]');
+  if (studyLifeSummary) studyLifeSummary.hidden = !['study', 'life'].includes(view);
+  document.querySelectorAll('[data-page]').forEach(section => { section.hidden = !section.dataset.page.split(/\s+/).includes(view); });
   document.querySelectorAll('.view-tab').forEach((button) => {
     const active = button.dataset.view === view;
     button.classList.toggle('active', active);
@@ -29,24 +53,113 @@ function setView(view) {
     else button.removeAttribute('aria-current');
   });
   if (library) renderTasks();
+  if (view === 'leaderboard') refreshLeaderboard();
 }
 document.querySelectorAll('.view-tab').forEach((button) => {
-  button.addEventListener('click', () => { location.hash = button.dataset.view === 'library' ? 'tasks' : 'home'; });
+  button.addEventListener('click', () => { location.hash = button.dataset.view === 'library' ? 'tasks' : button.dataset.view; });
 });
-window.addEventListener('hashchange', () => setView(location.hash === '#tasks' ? 'library' : 'home'));
-setView(location.hash === '#tasks' ? 'library' : 'home');
+window.addEventListener('hashchange', () => setView(viewFromHash()));
+setView(viewFromHash());
 const api = async (url, body) => {
   const response = await fetch(url, {
     method: body === undefined ? 'GET' : 'POST',
     credentials: 'same-origin',
-    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    headers: { 'x-aura-time-zone': Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC', ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
     body: body === undefined ? undefined : JSON.stringify(body),
     cache: 'no-store'
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || 'That request could not be completed.');
+  if (!response.ok) { const error = new Error(data.error || 'That request could not be completed.'); error.status = response.status; throw error; }
   return data;
 };
+function fallbackDeviceHash(value) {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i++) { hash ^= value.charCodeAt(i); hash = Math.imul(hash, 16777619); }
+  return Array.from({ length: 8 }, (_, i) => ((hash + i * 0x9e3779b9) >>> 0).toString(16).padStart(8, '0')).join('');
+}
+async function getDeviceId() {
+  const dimensions = [screen.width, screen.height].sort((a, b) => a - b).join('x');
+  const profile = [navigator.platform || 'unknown', dimensions, screen.colorDepth || 0, navigator.maxTouchPoints || 0, navigator.hardwareConcurrency || 0].join('|');
+  try {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(profile));
+    return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+  } catch { return fallbackDeviceHash(profile); }
+}
+const deviceId = await getDeviceId();
+let deviceBattery = null;
+let deviceHeartbeatTimer;
+let deviceRefreshTimer;
+let deviceReportingPaused = false;
+function deviceName() {
+  const ua = navigator.userAgent;
+  if (/Android/i.test(ua)) return 'Android device';
+  if (/iPhone/i.test(ua)) return 'iPhone';
+  if (/iPad/i.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) return 'iPad';
+  if (/Windows/i.test(ua)) return 'Windows PC';
+  if (/Macintosh|Mac OS/i.test(ua)) return 'Mac';
+  if (/Linux/i.test(ua)) return 'Linux device';
+  return 'Device';
+}
+async function reportDevice() {
+  if (!account?.user?.id || !navigator.onLine || deviceReportingPaused) return;
+  let batteryPercent = null, charging = null;
+  try {
+    if (!deviceBattery && typeof navigator.getBattery === 'function') deviceBattery = await navigator.getBattery();
+    if (deviceBattery) { batteryPercent = Math.round(deviceBattery.level * 100); charging = Boolean(deviceBattery.charging); }
+  } catch { deviceBattery = null; }
+  try {
+    await api('/api/planner', { action: 'device-heartbeat', deviceId, name: deviceName(), batteryPercent, charging, batterySupported: Boolean(deviceBattery) });
+  } catch { /* Device sync resumes on the next heartbeat or app open. */ }
+}
+function formatDeviceSeen(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Last seen time unavailable';
+  const minutes = Math.max(0, Math.floor((Date.now() - date.getTime()) / 60000));
+  if (minutes < 1) return 'Last seen just now';
+  if (minutes < 60) return `Last seen ${minutes} min${minutes === 1 ? '' : 's'} ago`;
+  if (minutes < 1440) return `Last seen ${Math.floor(minutes / 60)} hr${Math.floor(minutes / 60) === 1 ? '' : 's'} ago`;
+  return `Last seen ${date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
+}
+async function refreshDevices() {
+  const list = $('deviceList');
+  if (!list) return;
+  if (!account?.user?.id) { list.innerHTML = '<div class="device-empty">Sign in to see your devices.</div>'; return; }
+  try {
+    const { devices = [] } = await api('/api/planner', { action: 'devices-list' });
+    list.innerHTML = devices.length ? devices.map((device) => {
+      const battery = device.battery_percent === null || device.battery_percent === undefined ? 'Charge unavailable' : `${Number(device.battery_percent)}%${device.charging ? ' · charging' : ''}`;
+      const isCurrent = device.device_id === deviceId;
+      return `<article class="device-card"><span class="device-icon" aria-hidden="true">▣</span><div class="device-copy"><strong>${escapeHtml(device.name || 'Device')}${isCurrent ? ' <span class="device-current">This device</span>' : ''}</strong><span>${escapeHtml(formatDeviceSeen(device.last_seen))}</span></div><span class="device-charge">${escapeHtml(battery)}</span><button class="device-remove" type="button" data-device-id="${escapeHtml(device.device_id)}" aria-label="Remove ${escapeHtml(device.name || 'device')}">Remove</button></article>`;
+    }).join('') : '<div class="device-empty">Your devices will appear here when you open AURA on them.</div>';
+    list.querySelectorAll('.device-remove').forEach(button => button.addEventListener('click', async () => {
+      if (!confirm('Remove this device from your AURA list?')) return;
+      try {
+        await api('/api/planner', { action: 'device-remove', deviceId: button.dataset.deviceId });
+        if (button.dataset.deviceId === deviceId) { deviceReportingPaused = true; clearInterval(deviceHeartbeatTimer); }
+        await refreshDevices();
+      } catch { toast('Could not remove that device. Try again.'); }
+    }));
+  } catch (error) {
+    if (error.status === 401) list.innerHTML = '<div class="device-empty">Sign in to see your devices.</div>';
+    else list.innerHTML = '<div class="device-empty">Device status is temporarily unavailable.</div>';
+  }
+}
+function startDeviceSync() {
+  clearInterval(deviceHeartbeatTimer);
+  if (account?.user?.id) {
+    reportDevice();
+    deviceHeartbeatTimer = setInterval(reportDevice, 120000);
+  }
+}
+window.addEventListener('online', reportDevice);
+window.addEventListener('hashchange', () => { if (viewFromHash() === 'devices') refreshDevices(); });
+window.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reportDevice(); });
+if (typeof navigator.getBattery === 'function') navigator.getBattery().then((battery) => {
+  deviceBattery = battery;
+  battery.addEventListener('levelchange', reportDevice);
+  battery.addEventListener('chargingchange', reportDevice);
+}).catch(() => {});
+deviceRefreshTimer = setInterval(() => { if (viewFromHash() === 'devices') refreshDevices(); }, 60000);
 const authCall = async (path, body = {}) => {
   const response = await fetch(`/api/auth/${path}`, {
     method: 'POST', credentials: 'same-origin',
@@ -56,15 +169,32 @@ const authCall = async (path, body = {}) => {
   if (!response.ok) throw new Error(data.message || data.error || 'Authentication could not be completed.');
   return data;
 };
-// A device-local focus timer; it tracks time only and never awards AP.
+const planner = initPlanner(api, () => account);
+const priorityTools = $('homePriorityTools');
+priorityTools.append($('trackerBox'), document.querySelector('.focus-studio'));
+document.querySelector('.home-tools summary').textContent = 'More tools';
+window.addEventListener('aura:points-updated', event => { pending = Number(event.detail?.pending ?? pending); if (event.detail?.total !== undefined) state.total = Number(event.detail.total); refreshPending(); reloadAccount(); });
+window.addEventListener('aura:combo-awarded', event => { const award = event.detail; if (award?.addedPoints) { toast(`${award.name} combo · +${award.addedPoints.toLocaleString()} AP`); reloadAccount(); refreshLeaderboard(); } });
+// Focus time accrues only while the full-screen focus surface is visible.
 const focusStoreKey = 'aura_focus_studio_v1';
-const focusToday = new Date().toISOString().slice(0, 10);
+const focusPointIntervalSeconds = 120;
+const focusDay = new Date(); focusDay.setHours(focusDay.getHours() - 2); const focusToday = `${focusDay.getFullYear()}-${String(focusDay.getMonth()+1).padStart(2,'0')}-${String(focusDay.getDate()).padStart(2,'0')}`;
 let focusState;
 try { focusState = JSON.parse(localStorage.getItem(focusStoreKey)) || {}; } catch { focusState = {}; }
-if (focusState.date !== focusToday) focusState = { date: focusToday, minutes: 25, remaining: 25 * 60, completed: 0, running: false };
+if (focusState.date !== focusToday) focusState = { date: focusToday, minutes: 25, remaining: 25 * 60, completed: 0, running: false, pendingAwards: focusState.pendingAwards || [] };
 focusState.minutes = Number.isInteger(Number(focusState.minutes)) && Number(focusState.minutes) >= 1 && Number(focusState.minutes) <= 180 ? Number(focusState.minutes) : 25;
-focusState.remaining = Math.max(0, Number(focusState.remaining) || focusState.minutes * 60);
+focusState.remaining = Math.max(0, Math.min(focusState.minutes * 60, Number(focusState.remaining) || focusState.minutes * 60));
 focusState.completed = Math.max(0, Number(focusState.completed) || 0);
+focusState.activeSeconds = Math.max(0, Number(focusState.activeSeconds) || 0);
+focusState.awardedSegments = Math.max(0, Number(focusState.awardedSegments) || 0);
+focusState.pendingAwards = Array.isArray(focusState.pendingAwards) ? focusState.pendingAwards : [];
+focusState.sessionId = typeof focusState.sessionId === 'string' ? focusState.sessionId : '';
+focusState.subjectId = typeof focusState.subjectId === 'string' ? focusState.subjectId : '';
+// Start a fresh point segment when upgrading from the old five-minute award cadence.
+if (focusState.sessionId && !focusState.sessionId.startsWith('f2-')) {
+  focusState.sessionId = ''; focusState.activeSeconds = 0; focusState.awardedSegments = 0;
+}
+focusState.running = false;
 let focusInterval;
 let focusAudioContext;
 function playFocusTick(at) {
@@ -85,29 +215,85 @@ function playFocusAlarm() {
   } catch { /* Audio may be unavailable; the completed state still appears. */ }
 }
 function persistFocus() { localStorage.setItem(focusStoreKey, JSON.stringify(focusState)); }
+function renderFocusSubjects() {
+  const select = $('focusSubject'), subjects = planner.getSubjects(), current = focusState.subjectId;
+  select.innerHTML = '<option value="">Choose a subject</option>' + subjects.map(subject => `<option value="${escapeHtml(subject.id)}">${escapeHtml(subject.name)}</option>`).join('');
+  select.value = subjects.some(subject => subject.id === current) ? current : '';
+  focusState.subjectId = select.value; select.disabled = focusState.running;
+}
+async function syncFocusAwards() {
+  if (!account || !navigator.onLine || focusState.syncingAwards) return;
+  focusState.syncingAwards = true;
+  try {
+    while (focusState.pendingAwards.length && account) {
+      const result = await api('/api/planner', { action: 'focus-point', ...focusState.pendingAwards[0] });
+      focusState.pendingAwards.shift(); pending = Number(result.pending ?? pending);
+      state.total = Number(result.total ?? state.total); persistFocus(); refreshPending(); reloadAccount();
+    }
+  } catch (error) {
+    if (error.status === 409) { focusState.pendingAwards.shift(); persistFocus(); toast(error.message); }
+  } finally { focusState.syncingAwards = false; }
+}
+window.addEventListener('online', syncFocusAwards);
+window.addEventListener('aura:planner-synced', syncFocusAwards);
+function awardFocusSegment() {
+  if (!focusState.sessionId || !focusState.subjectId) return;
+  const segment = focusState.awardedSegments + 1;
+  const activityDay = new Date(); activityDay.setHours(activityDay.getHours() - 2);
+  const activityDate = `${activityDay.getFullYear()}-${String(activityDay.getMonth()+1).padStart(2,'0')}-${String(activityDay.getDate()).padStart(2,'0')}`;
+  focusState.awardedSegments = segment;
+  focusState.pendingAwards.push({ sessionId: focusState.sessionId, segment, subjectId: focusState.subjectId, date: activityDate });
+  planner.logFocusStudyBlock(focusState.sessionId, segment, focusState.subjectId);
+  persistFocus(); syncFocusAwards(); toast('2 focused minutes · +1 AP earned');
+}
+function tickFocus() {
+  if (!focusState.running || document.visibilityState !== 'visible') return;
+  focusState.remaining = Math.max(0, focusState.remaining - 1);
+  focusState.activeSeconds += 1;
+  if (Math.floor(focusState.activeSeconds / focusPointIntervalSeconds) > focusState.awardedSegments) awardFocusSegment();
+  if (focusState.remaining <= 0) return finishFocus();
+  renderFocus();
+}
 function finishFocus() {
   clearInterval(focusInterval); focusInterval = null;
-  focusState.running = false; focusState.endAt = null; focusState.remaining = focusState.minutes * 60; focusState.completed += 1;
-  persistFocus(); renderFocus(); playFocusAlarm();
+  focusState.running = false; focusState.remaining = focusState.minutes * 60; focusState.completed += 1;
+  focusState.activeSeconds = 0; focusState.awardedSegments = 0; focusState.sessionId = '';
+  playFocusAlarm();
+  persistFocus(); renderFocus();
   $('focusStatus').textContent = `Session complete · ${focusState.completed} today. Take a short break.`;
 }
 function renderFocus() {
-  const remaining = focusState.running ? Math.max(0, Math.ceil((focusState.endAt - Date.now()) / 1000)) : focusState.remaining;
-  if (focusState.running && remaining <= 0) return finishFocus();
+  const remaining = focusState.remaining;
   $('focusClock').textContent = `${String(Math.floor(remaining / 60)).padStart(2, '0')}:${String(remaining % 60).padStart(2, '0')}`;
   $('focusProgress').style.width = `${Math.max(0, Math.min(100, (1 - remaining / (focusState.minutes * 60)) * 100))}%`;
   $('focusToggle').textContent = focusState.running ? 'Pause focus' : 'Start focus';
+  $('focusLaunch').textContent = focusState.running ? 'Focus active' : 'Focus';
   $('focusToggle').setAttribute('aria-pressed', String(focusState.running));
   document.querySelectorAll('.focus-preset').forEach(button => {
     const active = Number(button.dataset.focusMinutes) === focusState.minutes;
     button.classList.toggle('active', active); button.setAttribute('aria-pressed', String(active));
   });
-  $('focusStatus').textContent = `Sessions today: ${focusState.completed} · focus time stays separate from Aura Points.`;
+  $('focusStatus').textContent = `${focusState.completed} sessions today · ${focusState.awardedSegments} AP earned`;
+  window.AURA_FOCUS_ACTIVE = Boolean(focusState.running);
+  const screen = $('focusScreen'); screen.classList.toggle('active', Boolean(focusState.running)); screen.setAttribute('aria-hidden', String(!focusState.running));
+  $('focusScreenTime').textContent = `${String(Math.floor(remaining / 60)).padStart(2, '0')}:${String(remaining % 60).padStart(2, '0')}`;
+  $('focusScreenClock').textContent = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(new Date());
+  const subject = planner.getSubjects().find(item => item.id === focusState.subjectId);
+  $('focusScreenSubject').textContent = subject?.name || 'Choose a subject';
+  $('focusSubject').disabled = focusState.running;
 }
+renderFocusSubjects();
+window.addEventListener('aura:subjects-updated', renderFocusSubjects);
+$('focusSubject').addEventListener('change', () => {
+  focusState.subjectId = $('focusSubject').value;
+  if (focusState.activeSeconds > 0) { focusState.sessionId = ''; focusState.activeSeconds = 0; focusState.awardedSegments = 0; }
+  persistFocus(); renderFocus();
+});
 document.querySelectorAll('.focus-preset').forEach(button => button.addEventListener('click', () => {
   clearInterval(focusInterval); focusInterval = null;
-  if (focusState.running) { focusState.running = false; focusState.endAt = null; }
+  if (focusState.running) focusState.running = false;
   focusState.minutes = Number(button.dataset.focusMinutes); focusState.remaining = focusState.minutes * 60;
+  focusState.sessionId = ''; focusState.activeSeconds = 0; focusState.awardedSegments = 0;
   $('focusCustomMinutes').value = focusState.minutes;
   persistFocus(); renderFocus();
 }));
@@ -115,20 +301,52 @@ $('focusCustomSet').addEventListener('click', () => {
   const minutes = Number($('focusCustomMinutes').value);
   if (!Number.isInteger(minutes) || minutes < 1 || minutes > 180) return toast('Choose a custom session from 1 to 180 minutes.');
   clearInterval(focusInterval); focusInterval = null;
-  focusState.running = false; focusState.endAt = null; focusState.minutes = minutes; focusState.remaining = minutes * 60;
+  focusState.running = false; focusState.minutes = minutes; focusState.remaining = minutes * 60;
+  focusState.sessionId = ''; focusState.activeSeconds = 0; focusState.awardedSegments = 0;
   persistFocus(); renderFocus(); toast(`${minutes}-minute session set`);
 });
 $('focusToggle').addEventListener('click', () => {
+  if (!mobileFocusAvailable) return;
   clearInterval(focusInterval); focusInterval = null;
-  if (focusState.running) { focusState.remaining = Math.max(0, Math.ceil((focusState.endAt - Date.now()) / 1000)); focusState.running = false; focusState.endAt = null; }
-  else { try { const AudioContextType = window.AudioContext || window.webkitAudioContext; if (AudioContextType) { focusAudioContext ||= new AudioContextType(); focusAudioContext.resume(); } } catch {} focusState.endAt = Date.now() + focusState.remaining * 1000; focusState.running = true; focusInterval = window.setInterval(renderFocus, 1000); }
+  if (focusState.running) focusState.running = false;
+  else {
+    if (!$('focusSubject').value) { $('focusSubject').focus(); return toast('Choose a subject before starting focus.'); }
+    focusState.subjectId = $('focusSubject').value;
+    focusState.sessionId ||= `f2-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2,8)}`}`;
+    try { const AudioContextType = window.AudioContext || window.webkitAudioContext; if (AudioContextType) { focusAudioContext ||= new AudioContextType(); focusAudioContext.resume(); } } catch {}
+    focusState.running = true; focusInterval = window.setInterval(tickFocus, 1000);
+  }
   persistFocus(); renderFocus();
+  if (!focusState.running) { window.dispatchEvent(new Event('focus')); window.setTimeout(checkValidationReminder, 250); window.setTimeout(showTomorrowPlan, 450); }
 });
-$('focusReset').addEventListener('click', () => { clearInterval(focusInterval); focusInterval = null; focusState.running = false; focusState.endAt = null; focusState.remaining = focusState.minutes * 60; persistFocus(); renderFocus(); });
-if (focusState.running && focusState.endAt) focusState.remaining = Math.max(0, Math.ceil((focusState.endAt - Date.now()) / 1000));
+$('focusLaunch').addEventListener('click', () => {
+  if (!mobileFocusAvailable) return;
+  if (focusState.running) return;
+  if (location.hash !== '#home') location.hash = '#home';
+  window.setTimeout(() => {
+    document.querySelector('.focus-studio').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    if (!$('focusSubject').value) { $('focusSubject').focus(); toast('Choose a subject to start'); return; }
+    $('focusToggle').click();
+  }, 80);
+});
+$('focusReset').addEventListener('click', () => { clearInterval(focusInterval); focusInterval = null; focusState.running = false; focusState.remaining = focusState.minutes * 60; focusState.activeSeconds = 0; focusState.awardedSegments = 0; focusState.sessionId = ''; persistFocus(); renderFocus(); });
+$('focusScreenExit').addEventListener('click', () => { if (focusState.running) $('focusToggle').click(); });
+document.addEventListener('keydown', event => { if (event.key === 'Escape' && focusState.running) $('focusScreenExit').click(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && focusState.running) {
+    clearInterval(focusInterval); focusInterval = null; focusState.running = false;
+    persistFocus(); renderFocus();
+  }
+});
+window.addEventListener('hashchange', () => {
+  if (focusState.running) { clearInterval(focusInterval); focusInterval = null; focusState.running = false; persistFocus(); renderFocus(); }
+});
+window.addEventListener('pagehide', () => {
+  if (focusState.running) { clearInterval(focusInterval); focusInterval = null; focusState.running = false; persistFocus(); }
+});
 $('focusCustomMinutes').value = focusState.minutes;
 renderFocus();
-if (focusState.running) focusInterval = window.setInterval(renderFocus, 1000);
+syncFocusAwards();
 
 function message(text, error = false) {
   $('authError').textContent = text || '';
@@ -138,12 +356,17 @@ const installButton = $('installApp');
 let installPrompt = null;
 const isInstalled = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 const isAppleMobile = /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-installButton.hidden = isInstalled;
-if (isAppleMobile && !isInstalled) installButton.textContent = 'Add AURA';
+const isAndroid = /Android/i.test(navigator.userAgent);
+installButton.hidden = isInstalled || (!isAppleMobile && !isAndroid);
+if (!isInstalled) installButton.textContent = isAppleMobile ? 'Add AURA' : 'Install AURA';
 window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); installPrompt = event; installButton.hidden = false; installButton.textContent = 'Install AURA'; });
 installButton.addEventListener('click', async () => {
   if (!installPrompt) {
-    $('toast').textContent = isAppleMobile ? 'In Safari, tap Share, then Add to Home Screen.' : 'Open your browser menu and choose Install app or Add to Home Screen.';
+    $('toast').textContent = isAppleMobile
+      ? 'In Safari, tap Share, then Add to Home Screen.'
+      : isAndroid
+        ? 'In Chrome, tap ⋮, then Install app or Add to Home screen.'
+        : 'Open your browser menu and choose Install app or Add to Home Screen.';
     $('toast').classList.add('show'); setTimeout(() => $('toast').classList.remove('show'), 4000);
     return;
   }
@@ -167,14 +390,14 @@ async function refreshLeaderboard() {
   try {
     const { entries } = await api('/api/leaderboard');
     $('leaderboardList').innerHTML = entries.map((entry, i) => `<div class="leader-entry"><span>${i + 1}. ${i === 0 ? `${escapeHtml(entry.title || 'Champion')} ` : ''}${escapeHtml(entry.name)}</span><b>${Number(entry.points).toLocaleString()} AP</b></div>`).join('') || '<p class="help">No validated scores yet.</p>';
-    $('leaderNotice').textContent = 'Scores include server-recorded missions after the day’s screen tracker is submitted.';
+    $('leaderNotice').textContent = 'Class and focus study points count immediately; mission points count after tracker validation.';
   } catch { $('leaderboardList').innerHTML = '<p class="help">Leaderboard unavailable right now.</p>'; }
 }
 function escapeHtml(value) { return String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function refreshPending() {
   let el = $('pendingPoints');
   if (!el) { el = document.createElement('span'); el.id = 'pendingPoints'; el.className = 'pending-ap'; $('totalAP').insertAdjacentElement('afterend', el); }
-  el.textContent = pending ? `${pending} AP awaiting today’s tracker` : '';
+  el.textContent = pending ? `${pending} mission AP awaiting today’s tracker` : '';
 }
 function renderPeriodTracker() {
   const selectedMonth = $('periodDate').value || `${localPeriodNow.getFullYear()}-${String(localPeriodNow.getMonth() + 1).padStart(2, '0')}`;
@@ -204,15 +427,96 @@ document.querySelectorAll('[data-period]').forEach(button => button.addEventList
 }));
 $('periodDate').addEventListener('change', renderPeriodTracker);
 $('periodYear').addEventListener('change', renderPeriodTracker);
+const validationPrefsKey = 'aura_validation_reminder_v1';
+let validationPrefs = { mode: 'manual', time: '20:00' };
+try { validationPrefs = { ...validationPrefs, ...JSON.parse(localStorage.getItem(validationPrefsKey) || '{}') }; } catch {}
+function renderValidationReminder() {
+  $('validationReminder').value = validationPrefs.mode;
+  $('validationReminderTime').value = validationPrefs.time || '20:00';
+  $('validationReminderTime').hidden = validationPrefs.mode !== 'custom';
+  $('validationReminderStatus').textContent = validationPrefs.mode === 'manual'
+    ? 'Your class and focus study points count immediately. Submit your report to validate mission points.'
+    : 'AURA checks this reminder while open. Class and focus study points count immediately; mission points validate after your report.';
+}
+function checkValidationReminder() {
+  if (!account || account.proof || window.AURA_FOCUS_ACTIVE || validationPrefs.mode === 'manual') return;
+  const now = new Date(), hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  const due = validationPrefs.mode === 'day-end' ? hhmm >= '01:50' && hhmm < '02:00' : hhmm >= (validationPrefs.time || '20:00');
+  if (!due) return;
+  const key = `aura_validation_reminded_${account.user.id}_${today()}`;
+  if (localStorage.getItem(key) === today()) return;
+  localStorage.setItem(key, today());
+  toast('Ready to validate today’s points? Add your screen-time report when you are.');
+}
+$('validationReminder').addEventListener('change', () => { validationPrefs.mode = $('validationReminder').value; localStorage.setItem(validationPrefsKey, JSON.stringify(validationPrefs)); renderValidationReminder(); checkValidationReminder(); });
+$('validationReminderTime').addEventListener('change', () => { validationPrefs.time = $('validationReminderTime').value || '20:00'; localStorage.setItem(validationPrefsKey, JSON.stringify(validationPrefs)); renderValidationReminder(); checkValidationReminder(); });
+renderValidationReminder();
+window.setInterval(checkValidationReminder, 60_000);
+window.addEventListener('focus', checkValidationReminder);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) checkValidationReminder(); });
 function showTracker(proof) {
-  $('trackerStatus').textContent = proof ? `Tracker checked · ${Math.ceil(proof.size_bytes / 1024)} KB · screenshot discarded · points validated${Number(proof.balance_bonus) ? ' · +25 AP balance bonus' : ''}.` : (account ? 'Upload at day’s end to validate points and claim any balance bonus.' : 'Sign in to submit a tracker.');
+  renderValidationReminder();
+  $('trackerStatus').textContent = proof ? `Tracker checked · ${Math.ceil(proof.size_bytes / 1024)} KB · screenshot discarded · mission points validated${Number(proof.balance_bonus) ? ' · +25 AP balance bonus' : ''}.` : (account ? 'Submit at day’s end to validate mission points and claim any balance bonus. Class and focus study points count immediately.' : 'Sign in to submit a tracker.');
   $('trackerStatus').className = `help ${proof ? 'tracker-ok' : ''}`;
   $('trackerFile').disabled = !account || !!proof;
   $('trackerForm').querySelector('button').disabled = !account || !!proof;
   $('trackerForm').querySelector('button').textContent = proof ? 'Tracker submitted' : 'Submit today’s tracker';
 }
-function showAccount(data) {
+function appDatePlus(days) {
+  const date = new Date(); date.setHours(date.getHours() - 2); date.setDate(date.getDate() + days);
+  const datePart = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  return `${datePart}T09:00`;
+}
+let tomorrowTemplate = [];
+function planRows(rows, readonly = false) {
+  $('tomorrowScheduleRows').innerHTML = rows.map((item, index) => `<div class="tomorrow-schedule-row${readonly ? ' is-template' : ''}" data-subject-id="${escapeHtml(item.subjectId || '')}" data-kind="${escapeHtml(item.kind || 'Personal')}"><input class="field" data-plan-title value="${escapeHtml(item.title || '')}" placeholder="Class, study, or activity" aria-label="Activity ${index + 1}" ${readonly ? 'readonly' : 'required'}><input class="field" data-plan-start type="time" value="${escapeHtml(item.start || '')}" aria-label="Start time" ${readonly ? 'readonly' : 'required'}><input class="field" data-plan-end type="time" value="${escapeHtml(item.end || '')}" aria-label="End time" ${readonly ? 'readonly' : 'required'}><button class="icon-button" type="button" data-plan-remove aria-label="Remove activity" ${readonly ? 'hidden' : ''}>×</button></div>`).join('');
+  $('tomorrowAddRow').hidden = readonly;
+}
+function showTomorrowPlan() {
+  if (!account?.proof || !account.user?.id || window.AURA_FOCUS_ACTIVE || $('tomorrowPlanDialog').open) return;
+  const day = today(), user = account.user.id, savedKey = `aura_tomorrow_schedule_saved_${user}`;
+  const sessionKey = `aura_tomorrow_schedule_later_${user}_${day}`;
+  if (localStorage.getItem(savedKey) === day || sessionStorage.getItem(sessionKey) === day) return;
+  if (document.querySelector('dialog[open]')) return window.setTimeout(showTomorrowPlan, 1200);
+  const tomorrowDate = appDatePlus(1).slice(0, 10), lastWeek = new Date(`${tomorrowDate}T12:00:00`); lastWeek.setDate(lastWeek.getDate() - 7);
+  const lastWeekDate = `${lastWeek.getFullYear()}-${String(lastWeek.getMonth() + 1).padStart(2, '0')}-${String(lastWeek.getDate()).padStart(2, '0')}`;
+  tomorrowTemplate = planner.getScheduleTemplate(lastWeekDate);
+  $('tomorrowPlanMode').value = 'same';
+  planRows(tomorrowTemplate, true);
+  $('tomorrowPlanDialog').showModal();
+}
+$('tomorrowPlanMode').addEventListener('change', () => {
+  const mode = $('tomorrowPlanMode').value;
+  planRows(mode === 'new' ? [{ title: '', start: '', end: '', kind: 'Personal' }] : tomorrowTemplate, mode === 'same');
+});
+$('tomorrowAddRow').addEventListener('click', () => {
+  const rows = [...$('tomorrowScheduleRows').querySelectorAll('.tomorrow-schedule-row')].map(row => ({ title: row.querySelector('[data-plan-title]').value, start: row.querySelector('[data-plan-start]').value, end: row.querySelector('[data-plan-end]').value, subjectId: row.dataset.subjectId || '', kind: row.dataset.kind || 'Personal' }));
+  rows.push({ title: '', start: '', end: '', kind: 'Personal' }); planRows(rows, false);
+});
+$('tomorrowScheduleRows').addEventListener('click', event => {
+  if (!event.target.closest('[data-plan-remove]')) return;
+  const row = event.target.closest('.tomorrow-schedule-row'); row.remove();
+  if (!$('tomorrowScheduleRows').children.length) planRows([{ title: '', start: '', end: '', kind: 'Personal' }], false);
+});
+$('tomorrowPlanLater').addEventListener('click', () => {
+  if (account?.user?.id) sessionStorage.setItem(`aura_tomorrow_schedule_later_${account.user.id}_${today()}`, today());
+  $('tomorrowPlanDialog').close();
+});
+$('tomorrowPlanForm').addEventListener('submit', event => {
+  event.preventDefault();
+  const mode = $('tomorrowPlanMode').value;
+  const rows = [...$('tomorrowScheduleRows').querySelectorAll('.tomorrow-schedule-row')].map(row => ({ title: row.querySelector('[data-plan-title]').value.trim(), start: row.querySelector('[data-plan-start]').value, end: row.querySelector('[data-plan-end]').value, subjectId: row.dataset.subjectId || '', kind: row.dataset.kind || 'Personal' }));
+  if (mode !== 'same' && (!rows.length || rows.some(item => !item.title || !item.start || !item.end || item.end <= item.start))) return toast('Add at least one activity with a valid start and end time.');
+  const tomorrowDate = appDatePlus(1).slice(0, 10);
+  planner.addOneOffActivities(tomorrowDate, mode === 'same' ? tomorrowTemplate : rows, true);
+  localStorage.setItem(`aura_tomorrow_schedule_saved_${account.user.id}`, today());
+  $('tomorrowPlanDialog').close(); toast('Tomorrow’s timetable is ready');
+});
+
+function showAccount(data, options = {}) {
   account = data;
+  startDeviceSync();
+  planner.setAccount(data, options).then(() => { renderFocusSubjects(); syncFocusAwards(); });
   verifiedHistory = data?.history || [];
   renderPeriodTracker();
   window.AURA_PROOF_SUBMITTED = !!data?.proof;
@@ -220,7 +524,9 @@ function showAccount(data) {
   for (const task of data?.customTasks || []) {
     if (!window.AURA_CATALOG.some(item => item.id === task.id)) window.AURA_CATALOG.unshift({ ...task, difficulty: task.difficulty || 'Moderate', icon: task.icon || '✳' });
   }
-  $('authState').textContent = data ? `Signed in · ${data.user.email}` : 'Local preview';
+  $('authState').textContent = data ? 'Signed in' : 'Local preview';
+  $('accountName').textContent = data?.profile?.display_name || 'Account';
+  $('avatar').textContent = (data?.profile?.display_name || state.name || 'A').trim().slice(0, 1).toUpperCase();
   $('authOpen').hidden = !!data;
   $('authOut').hidden = !data;
   $('displayName').disabled = false;
@@ -245,6 +551,8 @@ function showAccount(data) {
   $('displayName').value = state.name;
   save(); renderTasks(); renderMissions(); refreshPending(); showTracker(data.proof);
   refreshLeaderboard();
+  checkValidationReminder();
+  window.setTimeout(showTomorrowPlan, 400);
 }
 async function reloadAccount() {
   try { showAccount(await api('/api/me')); return true; }
@@ -254,6 +562,8 @@ async function reloadAccount() {
     return false;
   }
 }
+if (viewFromHash() === 'devices') refreshDevices();
+$('refreshDevices')?.addEventListener('click', () => { reportDevice(); refreshDevices(); });
 
 $('authOpen').addEventListener('click', () => { setAuthMode(false); $('authDialog').showModal(); });
 $('authClose').addEventListener('click', () => $('authDialog').close());
@@ -290,12 +600,12 @@ $('authForm').addEventListener('submit', async (event) => {
 });
 $('authOut').addEventListener('click', async () => {
   try { await authCall('sign-out'); } catch { /* local view still signs out */ }
-  showAccount(null); toast('Signed out');
+  $('accountMenu').open = false; showAccount(null, { signedOut: true }); toast('Signed out');
 });
 
 // Route signed-in writes through the server. The existing local-only behavior remains
 // available for visitors who have not created an account.
-$('taskList').addEventListener('click', async (event) => {
+$('missionLibraryList').addEventListener('click', async (event) => {
   if (!account) return;
   const button = event.target.closest('[data-id]');
   if (!button) return;
@@ -311,6 +621,19 @@ $('taskList').addEventListener('click', async (event) => {
 }, true);
 $('missions').addEventListener('click', async (event) => {
   if (!account) return;
+  const removeButton = event.target.closest('[data-remove-mission]');
+  if (removeButton) {
+    event.preventDefault(); event.stopImmediatePropagation();
+    const mission = state.missions.find(item => item.key === removeButton.dataset.removeMission);
+    if (!mission) return;
+    removeButton.disabled = true;
+    try {
+      await api('/api/select', { action: 'remove', taskId: mission.id });
+      state.missions = state.missions.filter(item => item.key !== mission.key);
+      save(); renderMissions(); renderTasks();
+    } catch (error) { removeButton.disabled = false; toast(error.message); }
+    return;
+  }
   const button = event.target.closest('[data-check]');
   if (!button) return;
   event.preventDefault(); event.stopImmediatePropagation();
@@ -321,7 +644,8 @@ $('missions').addEventListener('click', async (event) => {
     const result = await api('/api/complete', { taskId: mission.id });
     mission.done = true; state.total = result.total; pending = result.pending;
     save(); renderMissions(); renderTasks(); refreshPending(); refreshLeaderboard();
-    toast(`+${result.points} AP pending today’s tracker`);
+    reloadAccount();
+    toast(`+${result.points} AP pending tracker validation`);
   } catch (error) { button.disabled = false; toast(error.message); }
 }, true);
 $('customForm').addEventListener('submit', async (event) => {
@@ -341,7 +665,7 @@ async function saveDisplayName() {
   const name = $('displayName').value.trim().slice(0, 24);
   if (!name) { $('displayName').value = state.name || 'Aura Explorer'; return; }
   if (!account) { state.name = name; save(); toast('Name saved on this device'); return; }
-  try { const result = await api('/api/profile', { name }); state.name = result.name; save(); $('leaderName').textContent = result.name; toast('Profile saved'); }
+  try { const result = await api('/api/profile', { name }); state.name = result.name; $('accountName').textContent = result.name; $('avatar').textContent = result.name.trim().slice(0, 1).toUpperCase(); save(); $('leaderName').textContent = result.name; toast('Profile saved'); }
   catch (error) { $('displayName').value = state.name; toast(error.message); }
 }
 $('displayName').addEventListener('change', saveDisplayName);
