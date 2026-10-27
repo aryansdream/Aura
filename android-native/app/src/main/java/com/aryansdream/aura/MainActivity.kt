@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -390,32 +391,26 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
             Text("%02d:%02d".format(remaining / 60, remaining % 60), color = Color.White, fontSize = 76.sp, fontWeight = FontWeight.Light, letterSpacing = 2.sp)
             TextButton(onClick = stop) { Text("END FOCUS SESSION", color = Color(0xFFFFA6B7), fontSize = 11.sp, letterSpacing = 1.5.sp) }
         }
-        return
-    }
-    Column(Modifier.fillMaxSize().padding(22.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-        Text("FOCUS STUDIO", color = Muted, letterSpacing = 2.sp, fontSize = 10.sp)
-        Box(Modifier.padding(26.dp).size(250.dp).background(Surface, CircleShape), contentAlignment = Alignment.Center) {
-            Text(if (isRunning) "%02d:%02d".format(remaining / 60, remaining % 60) else "%02d:00".format(minutes), fontSize = 48.sp, fontWeight = FontWeight.Light, color = Purple)
-        }
-        if (isRunning) {
-            Text(context.getSharedPreferences("aura_native", 0).getString("focus_subject", "Study session").orEmpty(), color = Muted)
-            Button(onClick = stop, modifier = Modifier.fillMaxWidth().padding(top = 25.dp)) { Text("End focus") }
-            Text("The timer continues while AURA is in the background or the screen is off. AURA does not monitor which apps you open.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp, modifier = Modifier.padding(top = 12.dp))
-        } else {
+    } else {
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 14.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("FOCUS STUDIO", color = Muted, letterSpacing = 2.sp, fontSize = 10.sp)
+            Box(Modifier.padding(vertical = 2.dp).size(190.dp).background(Surface, CircleShape), contentAlignment = Alignment.Center) {
+                Text("%02d:00".format(minutes), fontSize = 46.sp, fontWeight = FontWeight.Light, color = Purple)
+            }
             Text("Choose a subject", color = Muted, modifier = Modifier.align(Alignment.Start))
             var expanded by remember { mutableStateOf(false) }
             val subjectList = (0 until subjects.length()).mapNotNull { subjects.optJSONObject(it) }
-            ExposedDropdownMenuBox(expanded, { expanded = it }, modifier = Modifier.fillMaxWidth().padding(top = 6.dp)) {
+            ExposedDropdownMenuBox(expanded, { expanded = it }, modifier = Modifier.fillMaxWidth()) {
                 OutlinedTextField(value = subjectList.firstOrNull { it.optString("id") == selected }?.optString("name") ?: "Select a saved subject", onValueChange = {}, readOnly = true, modifier = Modifier.menuAnchor().fillMaxWidth(), trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) })
                 ExposedDropdownMenu(expanded, { expanded = false }) { subjectList.forEach { item -> DropdownMenuItem(text = { Text(item.optString("name")) }, onClick = { select(item.optString("id")); expanded = false }) } }
             }
-            Row(Modifier.padding(vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = { setMinutes((minutes - 5).coerceAtLeast(5)) }) { Icon(Icons.Default.Remove, "Shorter") }
                 Text("$minutes min", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(horizontal = 18.dp))
                 IconButton(onClick = { setMinutes((minutes + 5).coerceAtMost(180)) }) { Icon(Icons.Default.Add, "Longer") }
             }
-            Button(onClick = { subjectList.firstOrNull { it.optString("id") == selected }?.let { start(selected, it.optString("name"), minutes) } }, enabled = selected.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Start focus session") }
-            Card(Modifier.fillMaxWidth().padding(top = 14.dp), colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(16.dp)) {
+            Button(onClick = { subjectList.firstOrNull { it.optString("id") == selected }?.let { start(selected, it.optString("name"), minutes) } }, enabled = selected.isNotBlank(), modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp)) { Text("Start focus session") }
+            Card(Modifier.fillMaxWidth().padding(top = 2.dp), colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(16.dp)) {
                 Column(Modifier.fillMaxWidth().padding(15.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Focus preferences", fontWeight = FontWeight.Bold)
                     Text("Water reminder · every $waterInterval min", color = Purple, fontSize = 12.sp)
@@ -432,7 +427,7 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                     if (blockNotifications && !notificationListenerEnabled) TextButton(onClick = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }) { Text("Allow notification access") }
                 }
             }
-            Text("The timer continues with the screen off. App blocking and notification blocking are optional and require their Android access to be enabled.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp, modifier = Modifier.padding(top = 10.dp))
+            Text("The timer continues with the screen off. App blocking and notification blocking are optional and require their Android access to be enabled.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp, modifier = Modifier.padding(bottom = 10.dp))
         }
     }
     if (showWaterPrompt) AlertDialog(onDismissRequest = { showWaterPrompt = false }, title = { Text("Water break") }, text = { Column(horizontalAlignment = Alignment.CenterHorizontally) { AnimatedWaterGlass(); Text("Take a sip, then return to your focus session.", color = Muted, fontSize = 12.sp) } }, confirmButton = { TextButton(onClick = { showWaterPrompt = false }) { Text("Continue focus") } })
