@@ -17,8 +17,26 @@ function render(state) {
   $('mediaList').querySelectorAll('[data-learn]').forEach(button => button.addEventListener('click', async () => { const item = current.media[Number(button.dataset.index)]; const result = await window.aura.feedback(`${item.app} ${item.title || ''}`, button.dataset.learn); $('classification').textContent = `Updated local model: ${result.label} (${Math.round(result.confidence * 100)}% confidence).`; toast('Correction saved on this computer.'); }));
 }
 window.aura.onState(render); window.aura.state().then(render);
-$('signin').onclick = () => window.aura.openAccount();
-$('check').onclick = async () => { try { await window.aura.checkAccount(); toast('Aura account connected.'); } catch (e) { toast(e.message); } };
+const signInDialog = $('signInDialog'), signInForm = $('signInForm');
+function openSignIn(message = '') { $('signInError').textContent = message; signInDialog.showModal(); $('signInForm').elements.email.focus(); }
+$('signin').onclick = () => openSignIn();
+$('signInClose').onclick = () => signInDialog.close();
+signInDialog.addEventListener('close', () => { signInForm.reset(); $('signInError').textContent = ''; });
+signInDialog.addEventListener('click', event => { if (event.target === signInDialog) signInDialog.close(); });
+signInForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  const email = String(signInForm.elements.email.value || '').trim();
+  const password = String(signInForm.elements.password.value || '');
+  const submit = $('signInSubmit');
+  submit.disabled = true; submit.textContent = 'Signing in…'; $('signInError').textContent = '';
+  try { await window.aura.signIn({ email, password }); signInForm.reset(); signInDialog.close(); toast('Aura account connected. Looking for devices on this Wi‑Fi…'); }
+  catch (error) { $('signInError').textContent = error.message || 'Could not sign in. Check your details and try again.'; }
+  finally { submit.disabled = false; submit.textContent = 'Sign in'; }
+});
+$('check').onclick = async () => {
+  if (!current.connected) { openSignIn('Sign in here first. Aura Sync uses its own secure session.'); return; }
+  try { await window.aura.checkAccount(); toast('Aura account connected.'); } catch (e) { toast(e.message); }
+};
 $('disconnect').onclick = () => window.aura.disconnect();
 $('dashboard').onclick = () => window.aura.openDashboard();
 $('clipboard').onchange = e => window.aura.setting('clipboard', e.target.checked);

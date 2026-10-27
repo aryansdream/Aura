@@ -1,7 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('aura', {
   state: () => ipcRenderer.invoke('state'),
-  openAccount: () => ipcRenderer.invoke('open-account'),
+  signIn: credentials => ipcRenderer.invoke('sign-in', credentials),
   checkAccount: () => ipcRenderer.invoke('check-account'),
   openDashboard: () => ipcRenderer.invoke('open-dashboard'),
   disconnect: () => ipcRenderer.invoke('disconnect'),

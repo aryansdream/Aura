@@ -330,7 +330,24 @@ setInterval(() => {
 app.on('window-all-closed', () => { stopLan(); app.quit(); });
 ipcMain.handle('state', () => ({ connected: !!account, accountName: account?.name || '', accountId: account?.accountId || '', devices: [...peers.values()], media: mediaEvents, settings, points: account?.stats?.total ?? null, streak: account?.stats?.streak ?? null, focus: hasActiveFocus() }));
 ipcMain.handle('open-dashboard', () => { const w = new BrowserWindow({ width: 1200, height: 850, parent: win, webPreferences: { partition: PARTITION, contextIsolation: true, nodeIntegration: false, sandbox: true } }); w.loadURL(URL); });
-ipcMain.handle('open-account', () => { const w = new BrowserWindow({ width: 960, height: 760, parent: win, webPreferences: { partition: PARTITION, contextIsolation: true, nodeIntegration: false, sandbox: true } }); w.loadURL(URL); });
+ipcMain.handle('sign-in', async (_event, credentials) => {
+  const email = String(credentials?.email || '').trim().slice(0, 254);
+  const password = String(credentials?.password || '');
+  if (!email || password.length < 8 || password.length > 1024) throw Error('Enter your Aura email and password.');
+  const ses = session.fromPartition(PARTITION);
+  let response;
+  try {
+    response = await ses.fetch(`${URL}/api/auth/sign-in/email`, {
+      method: 'POST', credentials: 'include', cache: 'no-store',
+      headers: { 'content-type': 'application/json', origin: URL },
+      body: JSON.stringify({ email, password, rememberMe: true })
+    });
+  } catch { throw Error('Could not reach Aura sign-in. Check your internet connection and try again.'); }
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw Error(result.message || result.error || (response.status === 401 ? 'Email or password is incorrect.' : `Aura sign-in failed (${response.status}).`));
+  await refreshAccount();
+  return true;
+});
 ipcMain.handle('check-account', async () => { await refreshAccount(); return true; });
 ipcMain.handle('disconnect', () => { stopLan(); account = null; try { fs.unlinkSync(userFile('account.json')); } catch {} emitState(); });
 ipcMain.handle('set-setting', (_e, name, value) => { if (!['clipboard', 'mediaDetection', 'autoPause'].includes(name)) return false; settings[name] = !!value; if (name === 'autoPause' && value) settings.mediaDetection = true; fs.writeFileSync(userFile('settings.json'), JSON.stringify(settings), { mode: 0o600 }); if (settings.mediaDetection) pollMedia(); emitState(); return true; });
