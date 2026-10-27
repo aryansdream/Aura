@@ -43,17 +43,25 @@ class FocusService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) { stopFocus(); return START_NOT_STICKY }
-        val duration = intent?.getLongExtra("duration", 25L * 60_000L) ?: 25L * 60_000L
-        val subject = intent?.getStringExtra("subject").orEmpty()
-        val subjectId = intent?.getStringExtra("subjectId").orEmpty()
-        val session = intent?.getStringExtra("session") ?: UUID.randomUUID().toString()
+        val restoring = intent == null
+        val nowWall = System.currentTimeMillis()
+        val endWall = if (restoring) prefs.getLong("focus_wall_deadline", 0L) else nowWall + (intent?.getLongExtra("duration", 25L * 60_000L) ?: 25L * 60_000L)
+        val duration = if (restoring) (endWall - nowWall).coerceAtLeast(0L) else endWall - nowWall
+        if (duration <= 0L || (restoring && !prefs.getBoolean("focus_running", false))) { stopFocus(); return START_NOT_STICKY }
+        val subject = intent?.getStringExtra("subject") ?: prefs.getString("focus_subject", "").orEmpty()
+        val subjectId = intent?.getStringExtra("subjectId") ?: prefs.getString("focus_subject_id", "").orEmpty()
+        val session = intent?.getStringExtra("session") ?: prefs.getString("focus_session", null) ?: UUID.randomUUID().toString()
         val deadline = SystemClock.elapsedRealtime() + duration
-        prefs.edit().putBoolean("focus_running", true).putLong("focus_deadline", deadline).putString("focus_subject", subject).apply()
+        val edit = prefs.edit().putBoolean("focus_running", true).putLong("focus_deadline", deadline)
+            .putLong("focus_wall_deadline", endWall).putString("focus_subject", subject)
+            .putString("focus_subject_id", subjectId).putString("focus_session", session)
+        if (!restoring) edit.putInt("focus_awarded", 0)
+        edit.apply()
         startForeground(NOTIFICATION, notification(duration, subject))
         wakeLock = (getSystemService(POWER_SERVICE) as PowerManager).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Aura:FocusTimer").apply { setReferenceCounted(false); acquire(duration + 60_000L) }
         loop?.cancel()
         loop = CoroutineScope(Dispatchers.IO).launch {
-            var awarded = 0
+            var awarded = prefs.getInt("focus_awarded", 0)
             while (true) {
                 val remaining = deadline - SystemClock.elapsedRealtime()
                 if (remaining <= 0) break
@@ -63,6 +71,7 @@ class FocusService : Service() {
                     runCatching {
                         AuraApi.request(applicationContext, "/api/planner", JSONObject().put("action", "focus-point").put("sessionId", session).put("segment", awarded).put("subjectId", subjectId))
                     }
+                    prefs.edit().putInt("focus_awarded", awarded).apply()
                 }
                 NotificationManagerCompatShim.notify(this@FocusService, NOTIFICATION, notification(remaining, subject))
                 delay(1000)
@@ -70,7 +79,7 @@ class FocusService : Service() {
             showCompletion(subject)
             stopFocus()
         }
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
     private fun notification(remainingMs: Long, subject: String): Notification {
@@ -103,13 +112,13 @@ class FocusService : Service() {
         loop?.cancel(); loop = null
         if (wakeLock?.isHeld == true) wakeLock?.release()
         wakeLock = null
-        prefs.edit().putBoolean("focus_running", false).putLong("focus_deadline", 0).apply()
+        prefs.edit().putBoolean("focus_running", false).putLong("focus_deadline", 0).putLong("focus_wall_deadline", 0).putInt("focus_awarded", 0).remove("focus_session").apply()
         getSystemService(NotificationManager::class.java).cancel(NOTIFICATION)
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
-    override fun onDestroy() { loop?.cancel(); if (wakeLock?.isHeld == true) wakeLock?.release(); prefs.edit().putBoolean("focus_running", false).putLong("focus_deadline", 0).apply(); super.onDestroy() }
+    override fun onDestroy() { loop?.cancel(); if (wakeLock?.isHeld == true) wakeLock?.release(); super.onDestroy() }
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {

@@ -2,7 +2,9 @@ package com.aryansdream.aura
 
 import android.app.AppOpsManager
 import android.app.usage.UsageStatsManager
+import android.app.usage.UsageEvents
 import android.content.Context
+import android.os.Build
 import android.os.Process
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.permission.HealthPermission
@@ -27,7 +29,35 @@ object DeviceHealth {
         val start = LocalDate.now().atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
         val end = System.currentTimeMillis()
         val usage = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
-        return usage.queryAndAggregateUsageStats(start, end).values.sumOf { it.totalTimeInForeground }.div(60_000L).toInt()
+        val events = usage.queryEvents(start, end)
+        val event = UsageEvents.Event()
+        val active = mutableSetOf<String>()
+        var screenInteractive = true
+        var last = start
+        var total = 0L
+        var sawActivityEvents = false
+        while (events.hasNextEvent()) {
+            events.getNextEvent(event)
+            val time = event.timeStamp.coerceIn(start, end)
+            val wasActive = active.isNotEmpty() && screenInteractive
+            when (event.eventType) {
+                UsageEvents.Event.SCREEN_NON_INTERACTIVE -> screenInteractive = false
+                UsageEvents.Event.SCREEN_INTERACTIVE -> screenInteractive = true
+                UsageEvents.Event.ACTIVITY_RESUMED -> { sawActivityEvents = true; active.add(event.packageName ?: "") }
+                UsageEvents.Event.ACTIVITY_PAUSED -> { sawActivityEvents = true; active.remove(event.packageName ?: "") }
+                UsageEvents.Event.MOVE_TO_FOREGROUND -> if (Build.VERSION.SDK_INT < 29) { sawActivityEvents = true; active.add(event.packageName ?: "") }
+                UsageEvents.Event.MOVE_TO_BACKGROUND -> if (Build.VERSION.SDK_INT < 29) { sawActivityEvents = true; active.remove(event.packageName ?: "") }
+            }
+            val isActive = active.isNotEmpty() && screenInteractive
+            if (wasActive) total += (time - last).coerceAtLeast(0)
+            last = time
+        }
+        if (active.isNotEmpty() && screenInteractive) total += (end - last).coerceAtLeast(0)
+        if (!sawActivityEvents) {
+            // Older devices and some vendor builds omit activity events; use Android's daily aggregate as a fallback.
+            return usage.queryAndAggregateUsageStats(start, end).values.sumOf { it.totalTimeInForeground }.div(60_000L).toInt()
+        }
+        return (total / 60_000L).toInt()
     }
 
     suspend fun healthSteps(context: Context): Long? {

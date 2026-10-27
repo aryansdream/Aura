@@ -93,9 +93,10 @@ class MainActivity : ComponentActivity() {
 private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAccess: () -> Unit, onStartFocus: (String, String, Int) -> Unit, onStopFocus: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
-    var user by remember { mutableStateOf<JSONObject?>(null) }
-    var account by remember { mutableStateOf<JSONObject?>(null) }
-    var planner by remember { mutableStateOf(JSONObject()) }
+    val localPrefs = remember { context.getSharedPreferences("aura_native", 0) }
+    var account by remember { mutableStateOf(runCatching { localPrefs.getString("account_cache", null)?.let(::JSONObject) }.getOrNull()) }
+    var user by remember { mutableStateOf(account?.optJSONObject("user")) }
+    var planner by remember { mutableStateOf(runCatching { localPrefs.getString("planner_cache", null)?.let(::JSONObject) ?: JSONObject() }.getOrDefault(JSONObject())) }
     var leaderboard by remember { mutableStateOf(JSONArray()) }
     var page by remember { mutableStateOf("Today") }
     var busy by remember { mutableStateOf(false) }
@@ -120,16 +121,21 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
             busy = true; error = ""
             try {
                 val (me, plan) = withContext(Dispatchers.IO) {
+                    // Refresh Better Auth's persistent session cookie before asking for account data.
+                    runCatching { AuraApi.request(context, "/api/auth/get-session") }
                     AuraApi.request(context, "/api/me") to AuraApi.request(context, "/api/planner")
                 }
                 account = me; user = me.optJSONObject("user"); planner = plan.optJSONObject("data") ?: JSONObject()
                 AuraWidgetProvider.sync(context, me)
-                context.getSharedPreferences("aura_native", 0).edit().putString("planner_cache", planner.toString()).apply()
+                localPrefs.edit().putString("account_cache", me.toString()).putString("planner_cache", planner.toString()).apply()
                 ClassReminderScheduler.sync(context, planner)
                 val health = planner.optJSONArray("lifestyle")?.lastObjectForDay(LocalDate.now().toString())
                 if (health != null) { steps = health.optInt("steps").takeIf { it > 0 }?.toString() ?: ""; screenTime = health.optInt("screenTime").takeIf { it > 0 }?.toString() ?: ""; calories = health.optInt("calories").takeIf { it > 0 }?.toString() ?: "" }
                 if (subjectChoice.isBlank()) subjectChoice = planner.optJSONArray("subjects")?.optJSONObject(0)?.optString("id").orEmpty()
-            } catch (e: Exception) { user = null; error = e.message ?: "Could not connect to AURA." }
+            } catch (e: Exception) {
+                // Keep the signed-in account and its last synced data visible during outages or expired connections.
+                error = "Could not refresh AURA right now. Your saved account is still here; check your connection and tap refresh."
+            }
             busy = false
         }
     }
@@ -142,21 +148,28 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
     LaunchedEffect(page, healthSyncSignal, user?.optString("id")) {
         if (page == "Life" && user != null) {
             val readings = withContext(Dispatchers.IO) {
-                val stepsRead = runCatching { DeviceHealth.healthSteps(context) }.getOrNull()
+                val stepsRead = runCatching { DeviceHealth.healthSteps(context) }
                 val screenRead = runCatching { DeviceHealth.todayScreenMinutes(context) }.getOrNull()
-                stepsRead to screenRead
+                Triple(stepsRead, screenRead, DeviceHealth.hasUsageAccess(context))
             }
-            usageAccess = DeviceHealth.hasUsageAccess(context)
+            usageAccess = readings.third
             deviceScreenMinutes = readings.second
-            val syncedSteps = readings.first?.toString()
+            val syncedSteps = readings.first.getOrNull()?.toString()
             val syncedScreen = readings.second?.toString()
             if (syncedSteps != null) steps = syncedSteps
             if (syncedScreen != null) screenTime = syncedScreen
+            syncStatus = buildList {
+                if (syncedSteps == null) add(if (readings.first.isFailure) "Steps could not be read from Health Connect." else "Connect Health Connect to sync today's steps.")
+                else if (syncedSteps == "0") add("Health Connect has no step records for today yet.")
+                if (syncedScreen == null) add("Allow Usage Access to read screen use.")
+                else add("Screen use is estimated from Android foreground-app activity; Android may count it differently from Digital Wellbeing.")
+            }.joinToString(" ")
             if (syncedSteps != null || syncedScreen != null) {
                 try {
                     val saved = withContext(Dispatchers.IO) { saveLifeEntry(context, planner, syncedSteps ?: steps, syncedScreen ?: screenTime, calories) }
                     planner = saved
-                    syncStatus = "Device activity synced and saved to your AURA account."
+                    localPrefs.edit().putString("planner_cache", saved.toString()).apply()
+                    syncStatus = "$syncStatus Saved to your AURA account.".trim()
                 } catch (e: Exception) { syncStatus = e.message ?: "Device data could not sync." }
             }
         }
@@ -210,7 +223,14 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
                     }
                 }
                 "Table" -> LeaderboardPage(leaderboard)
-                else -> InfoPage()
+                else -> InfoPage(onSignOut = {
+                    scope.launch {
+                        busy = true
+                        withContext(Dispatchers.IO) { AuraApi.signOut(context) }
+                        account = null; user = null; planner = JSONObject(); leaderboard = JSONArray()
+                        error = ""; busy = false
+                    }
+                })
             }
         }
     }
@@ -480,7 +500,7 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
     }
 }
 
-@Composable private fun InfoPage() {
+@Composable private fun InfoPage(onSignOut: () -> Unit) {
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(bottom = 22.dp)) {
         item { SectionTitle("About AURA", "THE AURA METHOD") }
         item { InfoCard("How points work", "Missions earn half their library value and taper by 3% at chapter milestones. Classes earn 10 AP. Focus earns 1 AP every two focused minutes. Streaks advance whenever you earn points.") }
@@ -494,6 +514,9 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
             LinkRow("Email", "aryantiwari90605@gmail.com", "mailto:aryantiwari90605@gmail.com", context)
         } }
         item { InfoCard("Device features", "Add the AURA points and day-streak widget from your Android home screen: long-press the home screen, choose Widgets, then select AURA. The focus timer continues with the screen off. ChatGPT, Gemini, YouTube, and other non-social apps are allowed during focus; opening social media or the home screen ends the timer. Usage Access enables this app-switch check and screen-time sync. Steps sync through Health Connect, and calories can be logged in Life.") }
+        item { InfoCard("Account", "Your sign-in stays saved on this device. Use Sign out only when you want to remove this account from the app.") {
+            Button(onClick = onSignOut, modifier = Modifier.fillMaxWidth().padding(top = 12.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF392832))) { Text("Sign out of AURA") }
+        } }
     }
 }
 
