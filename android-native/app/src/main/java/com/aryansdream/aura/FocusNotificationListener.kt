@@ -15,6 +15,7 @@ class FocusNotificationListener : NotificationListenerService() {
     private val mediaHandler = Handler(Looper.getMainLooper())
     private val lastMediaSignatures = mutableSetOf<String>()
     private val lastMediaSentAt = mutableMapOf<String, Long>()
+    private val lastLocalPauseAt = mutableMapOf<String, Long>()
     private val mediaPoll = object : Runnable {
         override fun run() {
             scanActiveMedia()
@@ -69,6 +70,16 @@ class FocusNotificationListener : NotificationListenerService() {
                 val signature = "$packageName|$title|$artist"
                 currentSignatures.add(signature)
                 val now = System.currentTimeMillis()
+                if (prefs.getBoolean("media_auto_pause_enabled", false)) {
+                    val result = LocalMediaClassifier.classify("$packageName $title $artist")
+                    if (result.category == "entertainment" && result.confidence >= 0.76 &&
+                        now - (lastLocalPauseAt[signature] ?: 0L) >= 10_000L) {
+                        lastLocalPauseAt[signature] = now
+                        prefs.edit().putString("media_blocked_package", packageName).apply()
+                        runCatching { active.transportControls.pause() }
+                        sendBroadcast(android.content.Intent(FocusBlockAccessibilityService.ACTION_MEDIA_RESTRICTED).setPackage(this@FocusNotificationListener.packageName))
+                    }
+                }
                 if (signature !in lastMediaSignatures || now - (lastMediaSentAt[signature] ?: 0L) >= 30_000L) {
                     val label = runCatching { packageManager.getApplicationLabel(packageManager.getApplicationInfo(packageName, 0)).toString() }
                         .getOrDefault(packageName.substringAfterLast('.'))

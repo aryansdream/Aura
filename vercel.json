@@ -1,6 +1,10 @@
 {
   "headers": [
     {
+      "source": "/aura-android-1.4.3-master.apk",
+      "headers": [{ "key": "Cache-Control", "value": "no-store, max-age=0" }]
+    },
+    {
       "source": "/aura-android-1.4.2-master.apk",
       "headers": [{ "key": "Cache-Control", "value": "no-store, max-age=0" }]
     },
