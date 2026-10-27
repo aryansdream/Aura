@@ -12,6 +12,10 @@ Use JDK 17 or newer, Android SDK Platform 36, and run:
 
 The installable debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
 
+## Publishing an in-app update
+
+Increment `versionCode` and `versionName` in `app/build.gradle.kts`, build the APK, then replace `public/aura-android.apk`. Update `public/aura-update.json` with the new version values and the APK's SHA-256 hash. Keep the same signing key used for the currently published APK so Android can install updates over existing copies. Vercel serves the APK and release manifest without caching; installed apps check the manifest from the About page and open Android's installer after verifying the downloaded APK hash.
+
 ## Included in this build
 
 - Native sign-in and account creation connected to the AURA service.

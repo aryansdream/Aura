@@ -1,0 +1,12 @@
+{
+  "headers": [
+    {
+      "source": "/aura-update.json",
+      "headers": [{ "key": "Cache-Control", "value": "no-store, max-age=0" }]
+    },
+    {
+      "source": "/aura-android.apk",
+      "headers": [{ "key": "Cache-Control", "value": "no-store, max-age=0" }]
+    }
+  ]
+}

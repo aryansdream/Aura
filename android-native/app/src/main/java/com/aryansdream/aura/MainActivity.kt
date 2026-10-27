@@ -269,6 +269,29 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                         account = null; user = null; planner = JSONObject(); leaderboard = JSONArray()
                         error = ""; busy = false
                     }
+                }, onUpdate = {
+                    scope.launch {
+                        busy = true
+                        syncMessage = "Checking for AURA updates…"
+                        try {
+                            val releaseAndFile = withContext(Dispatchers.IO) {
+                                val release = AppUpdater.latestRelease()
+                                if (release.versionCode <= AppUpdater.installedVersionCode(context)) null
+                                else release to AppUpdater.download(context, release)
+                            }
+                            if (releaseAndFile == null) {
+                                syncMessage = "AURA is up to date."
+                            } else if (Build.VERSION.SDK_INT >= 26 && !context.packageManager.canRequestPackageInstalls()) {
+                                syncMessage = "Update downloaded. Allow AURA to install updates, then tap Check again."
+                                runCatching { context.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, android.net.Uri.parse("package:${context.packageName}"))) }
+                            } else {
+                                syncMessage = "Opening Android installer for AURA ${releaseAndFile.first.versionName}…"
+                                context.startActivity(AppUpdater.installerIntent(context, releaseAndFile.second))
+                            }
+                        } catch (e: Exception) {
+                            syncMessage = e.message ?: "Could not check for updates. Try again later."
+                        } finally { busy = false }
+                    }
                 })
             }
         }
@@ -740,7 +763,9 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
     }
 }
 
-@Composable private fun InfoPage(onSignOut: () -> Unit) {
+@Composable private fun InfoPage(onSignOut: () -> Unit, onUpdate: () -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val installedVersion = remember { context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "" }
     val atmosphere = rememberInfiniteTransition(label = "info atmosphere")
     val infinityGlow by atmosphere.animateFloat(0.12f, 0.32f, infiniteRepeatable(tween(2300, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "infinity glow")
     LazyColumn(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0xFF11111B), Color(0xFF111A22), Night))).padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(top = 10.dp, bottom = 22.dp)) {
@@ -764,6 +789,12 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
             LinkRow("Email", "aryantiwari90605@gmail.com", "mailto:aryantiwari90605@gmail.com", context)
         } }
         item { InfoCard("Device features", "Add the AURA points and day-streak widget from your Android home screen: long-press the home screen, choose Widgets, then select AURA. The focus timer continues with the screen off. ChatGPT, Gemini and YouTube stay available. Enable AURA in Accessibility and Notification access settings to cover social apps and mute their alerts while Focus runs. Scheduled task alarms and notifications are set in the Tasks tab. Android may ask for notification permission; exact Notification reminders may also require Alarms & reminders access. Alarms use Android’s alarm service and can ring while AURA is closed.") }
+        item { InfoCard("App updates", "Installed version $installedVersion. Check here for new AURA versions and install them without leaving the app. Android will ask you to confirm each installation.") {
+            Button(onClick = onUpdate, modifier = Modifier.fillMaxWidth().padding(top = 12.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF55459B))) {
+                Icon(Icons.Default.SystemUpdateAlt, contentDescription = null, modifier = Modifier.size(18.dp))
+                Text("  Check for updates")
+            }
+        } }
         item { InfoCard("Account", "Your sign-in stays saved on this device. Use Sign out only when you want to remove this account from the app.") {
             Button(onClick = onSignOut, modifier = Modifier.fillMaxWidth().padding(top = 12.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF392832))) { Text("Sign out of AURA") }
         } }
