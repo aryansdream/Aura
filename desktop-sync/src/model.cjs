@@ -11,7 +11,9 @@ const training = {
     'lecture university classroom exam revision flashcards language learning',
     'coursera udemy textbook audiobook skill training how to guide',
     'code editor terminal developer tools database design',
-    'writing essay reading book science technology history'
+    'writing essay reading book science technology history',
+    'lofi instrumental classical ambient focus music for study concentration',
+    'productivity playlist background music lecture tutorial coding work'
   ],
   entertainment: [
     'celebrity gossip drama reality show influencer vlog',
@@ -23,7 +25,10 @@ const training = {
     'shorts reels viral trending social media',
     'news debate talk show celebrity interview',
     'cartoon anime fan edit compilation',
-    'travel food review unboxing lifestyle haul'
+    'travel food review unboxing lifestyle haul',
+    'music video song pop rap hip hop chart hit album concert lyrics dance',
+    'comedy stand up sketch funny jokes parody sitcom humorous clips',
+    'entertainment content music comedy celebrity vlog reaction video'
   ]
 };
 const tokenize = value => String(value || '').toLowerCase().match(/[a-z0-9]+/g) || [];

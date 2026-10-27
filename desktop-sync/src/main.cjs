@@ -43,6 +43,14 @@ function loadDeviceId() {
   return id;
 }
 function rawKey() { return Buffer.from(account.lanSyncKey, 'utf8'); }
+function readClipboardText(limit = 6000) {
+  try {
+    const value = clipboard.readText();
+    if (typeof value === 'string') return value.slice(0, limit);
+    if (Buffer.isBuffer(value)) return value.toString('utf8', 0, limit);
+  } catch {}
+  return '';
+}
 function aesKey() {
   const hex = account.lanSyncKey;
   if (!/^[0-9a-f]{64}$/i.test(hex)) throw Error('Aura local sync key is not a valid 256-bit key.');
@@ -177,7 +185,7 @@ function startLan() {
         const peer = peers.get(msg.deviceId);
         const result = classify(`${data.app || ''} ${data.title || ''} ${data.artist || ''}`, feedback);
         mediaEvents.unshift({ source: peer?.name || 'Aura device', app: String(data.app || 'Media app').slice(0, 100), packageName: String(data.packageName || ''), title: String(data.title || '').slice(0, 180), category: result.category, label: result.label, confidence: result.confidence, at: Date.now() });
-        if (settings.autoPause && peer?.focusActive && result.category === 'entertainment' && result.confidence >= 0.76 && data.packageName) {
+        if (settings.autoPause && hasActiveFocus() && result.category === 'entertainment' && result.confidence >= 0.76 && data.packageName) {
           broadcast({ kind: 'media_pause', targetDeviceId: msg.deviceId, packageName: String(data.packageName).slice(0, 180) });
         }
         mediaEvents = mediaEvents.slice(0, 50); emitState();
@@ -321,7 +329,7 @@ function createWindow() {
 app.whenReady().then(() => { loadAccount(); createWindow(); if (account) startLan(); });
 setInterval(() => {
   if (!account || !settings.clipboard) return;
-  const value = clipboard.readText().slice(0, 6000);
+  const value = readClipboardText();
   if (!value || value === lastDesktopClipboard) return;
   lastDesktopClipboard = value;
   if (value === ignoredClipboard) { ignoredClipboard = ''; return; }
@@ -355,4 +363,4 @@ ipcMain.handle('send-text', async (_e, peerId, value) => { const peer = peers.ge
 ipcMain.handle('send-file', async (_e, peerId) => { const peer = peers.get(peerId); const picked = await dialog.showOpenDialog(win, { properties: ['openFile'] }); if (picked.canceled || !picked.filePaths[0]) return; const file = picked.filePaths[0]; const data = fs.readFileSync(file); if (data.length > 50 * 1024 * 1024) throw Error('Files must be 50 MB or smaller.'); await sendEncrypted(peer, { name: path.basename(file), mime: 'application/octet-stream', data }); });
 ipcMain.handle('classify', (_e, text) => classify(String(text || '').slice(0, 500), feedback));
 ipcMain.handle('feedback', (_e, text, label) => { if (!['study', 'entertainment'].includes(label)) return; feedback.push([String(text).slice(0, 300), label]); feedback = feedback.slice(-500); fs.writeFileSync(userFile('feedback.json'), JSON.stringify(feedback), { mode: 0o600 }); return classify(text, feedback); });
-ipcMain.on('clipboard-changed', () => { if (!account || !settings.clipboard) return; const text = clipboard.readText().slice(0, 6000); if (!text || text === ignoredClipboard) { ignoredClipboard = ''; return; } broadcast({ kind: 'clipboard', text, clipAt: Date.now(), origin: deviceId }); });
+ipcMain.on('clipboard-changed', () => { if (!account || !settings.clipboard) return; const text = readClipboardText(); if (!text || text === ignoredClipboard) { ignoredClipboard = ''; return; } broadcast({ kind: 'clipboard', text, clipAt: Date.now(), origin: deviceId }); });

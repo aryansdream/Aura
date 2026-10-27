@@ -1,6 +1,6 @@
 {
   "name": "aura-sync",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Local-first Aura companion for Linux and Windows",
   "author": "Aryan Tiwari <aryantiwari90605@gmail.com>",
   "homepage": "https://aura-day-tracker.vercel.app",
@@ -11,7 +11,13 @@
     "icon": "../public/aura-icon-512.png",
     "directories": { "output": "release" },
     "files": ["src/**/*", "package.json"],
-    "linux": { "category": "Utility", "target": ["deb", "AppImage"], "executableName": "aura-sync", "maintainer": "Aryan Tiwari <aryantiwari90605@gmail.com>" },
+    "linux": {
+      "category": "Utility",
+      "target": ["deb", "AppImage"],
+      "executableName": "aura-sync",
+      "maintainer": "Aryan Tiwari <aryantiwari90605@gmail.com>"
+    },
+    "deb": { "depends": ["libgtk-3-0", "libnotify4", "libnss3", "libxss1", "libxtst6", "xdg-utils", "libatspi2.0-0", "libuuid1", "libsecret-1-0", "playerctl"] },
     "win": { "icon": "src/aura-sync.ico", "target": [{ "target": "nsis", "arch": ["x64"] }] },
     "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true, "createDesktopShortcut": true }
   },

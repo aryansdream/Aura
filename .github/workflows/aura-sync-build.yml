@@ -3,9 +3,10 @@ name: Aura Sync desktop builds
 on:
   workflow_dispatch:
   push:
-    paths:
-      - 'desktop-sync/**'
-      - '.github/workflows/aura-sync-build.yml'
+    branches:
+      - main
+    tags:
+      - 'aura-sync-v*'
 
 jobs:
   linux:
@@ -51,3 +52,24 @@ jobs:
             desktop-sync/release/*.exe
             desktop-sync/release/*.blockmap
           if-no-files-found: error
+
+  publish-release:
+    if: startsWith(github.ref, 'refs/tags/aura-sync-v')
+    needs: [linux, windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: aura-sync-*
+          path: release-assets
+          merge-multiple: true
+      - name: Publish desktop installers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" release-assets/* \
+            --title "Aura Sync ${TAG#aura-sync-v}" \
+            --notes "Aura Sync desktop companion update. Includes Linux .deb/AppImage and Windows .exe. This release fixes clipboard polling and improves local media classification and cross-device Focus pausing. Media classification uses player/app/title metadata locally; it does not capture screen or audio."
