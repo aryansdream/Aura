@@ -16,6 +16,35 @@ function normalize(data) {
   result.completionChecks = result.completionChecks.map(x => ({ id: cleanString(x.id, 100), done: Boolean(x.done), checkedAt: Number(x.checkedAt) || Date.now(), activityId: cleanString(x.activityId, 48), date: /^\d{4}-\d{2}-\d{2}$/.test(x.date) ? x.date : '', title: cleanString(x.title, 100), kind: ['Class','Study','Personal'].includes(x.kind) ? x.kind : '', subjectId: cleanString(x.subjectId, 48), pointsSynced: Boolean(x.pointsSynced), points: Math.max(0, Math.min(10, Number(x.points) || 0)) })).filter(x => x.id);
   return result;
 }
+
+async function autoCompleteLifestyleMissions(sql, userId, day, data) {
+  const focusedMinutes = data.studyLogs
+    .filter(item => item.date === day && item.topic === 'Focus session')
+    .reduce((sum, item) => sum + item.minutes, 0);
+  const steps = Number(data.lifestyle.find(item => item.date === day)?.steps || 0);
+  const stepGoal = Math.max(1000, Math.min(50000, Number(data.settings?.dailyStepGoal) || 8000));
+  const ready = new Set();
+  if (focusedMinutes >= 25) { ready.add('t1'); ready.add('t123'); }
+  if (focusedMinutes >= 45) ready.add('t2');
+  if (focusedMinutes >= 50) ready.add('t124');
+  if (focusedMinutes >= 90) ready.add('t3');
+  if (steps >= stepGoal) ready.add('t66');
+  if (!ready.size) return;
+  const [closed] = await sql`SELECT 1 FROM aura_day_submissions WHERE user_id=${userId} AND day=${day}`;
+  if (closed) return;
+  for (const task of catalog.filter(item => ready.has(item.id))) {
+    const [mission] = await sql`SELECT reward_points FROM aura_missions WHERE user_id=${userId} AND task_id=${task.id} AND day=${day} AND status <> 'done'`;
+    if (!mission) continue;
+    const points = Number(mission.reward_points || task.points);
+    const [earned] = await sql`SELECT COALESCE(SUM(points),0)::int AS total FROM aura_completions WHERE user_id=${userId} AND day=${day}`;
+    if (earned.total + points > 200) break;
+    const inserted = await sql`INSERT INTO aura_completions(user_id, task_id, title, category, points, verified, day)
+      VALUES(${userId}, ${task.id}, ${task.title}, ${task.category}, ${points}, true, ${day})
+      ON CONFLICT(user_id, task_id, day) DO NOTHING RETURNING task_id`;
+    if (inserted.length) await sql`UPDATE aura_missions SET status='done' WHERE user_id=${userId} AND task_id=${task.id} AND day=${day}`;
+  }
+}
+
 export default async function handler(req, res) {
   if (!['GET', 'POST'].includes(req.method)) return send(res, 405, { error: 'Method not allowed' });
   try {
@@ -62,6 +91,18 @@ export default async function handler(req, res) {
       const inserted = await sql`INSERT INTO aura_completions(user_id, task_id, title, category, points, verified, day)
         VALUES(${user.id}, ${taskId}, ${`Class attended: ${title}`}, 'Classes', 10, true, ${date})
         ON CONFLICT(user_id, task_id, day) DO NOTHING RETURNING points`;
+      const classMission = catalog.find(item => item.id === 't16');
+      const [selectedClassMission] = classMission ? await sql`SELECT reward_points FROM aura_missions WHERE user_id=${user.id} AND task_id='t16' AND day=${date} AND status <> 'done'` : [];
+      if (inserted.length && selectedClassMission && classMission) {
+        const [earned] = await sql`SELECT COALESCE(SUM(points),0)::int AS total FROM aura_completions WHERE user_id=${user.id} AND day=${date}`;
+        const points = Number(selectedClassMission.reward_points || classMission.points);
+        if (earned.total + points <= 200) {
+          await sql`INSERT INTO aura_completions(user_id, task_id, title, category, points, verified, day)
+            VALUES(${user.id}, ${classMission.id}, ${classMission.title}, ${classMission.category}, ${points}, true, ${date})
+            ON CONFLICT(user_id, task_id, day) DO NOTHING`;
+          await sql`UPDATE aura_missions SET status='done' WHERE user_id=${user.id} AND task_id='t16' AND day=${date}`;
+        }
+      }
       const [totals] = await sql`SELECT COALESCE(SUM(points) FILTER (WHERE verified),0)::int AS total,
         COALESCE(SUM(points) FILTER (WHERE NOT verified),0)::int AS pending FROM aura_completions WHERE user_id=${user.id}`;
       return send(res, 200, { points: Number(inserted[0]?.points || 0), total: totals.total, pending: totals.pending, alreadyRecorded: !inserted.length });
@@ -84,6 +125,15 @@ export default async function handler(req, res) {
       const inserted = await sql`INSERT INTO aura_completions(user_id, task_id, title, category, points, verified, day)
         VALUES(${user.id}, ${taskId}, ${`Focus study: ${subject.name}`}, 'Study', 1, true, ${day})
         ON CONFLICT(user_id, task_id, day) DO NOTHING RETURNING points`;
+      if (inserted.length) {
+        await sql`UPDATE aura_planner_data SET data=jsonb_set(
+          data, '{studyLogs}', COALESCE(data->'studyLogs', '[]'::jsonb) || jsonb_build_array(
+            jsonb_build_object('id', ${taskId}, 'subjectId', ${subjectId}, 'date', ${day}, 'minutes', 2, 'topic', 'Focus session')
+          ), true), updated_at=now()
+          WHERE user_id=${user.id}`;
+        const [row] = await sql`SELECT data FROM aura_planner_data WHERE user_id=${user.id}`;
+        if (row?.data) await autoCompleteLifestyleMissions(sql, user.id, day, normalize(row.data));
+      }
       const [totals] = await sql`SELECT COALESCE(SUM(points) FILTER (WHERE verified),0)::int AS total,
         COALESCE(SUM(points) FILTER (WHERE NOT verified),0)::int AS pending FROM aura_completions WHERE user_id=${user.id}`;
       return send(res, 200, { points: Number(inserted?.[0]?.points || 0), total: totals.total, pending: totals.pending, alreadyRecorded: !inserted.length });
@@ -100,6 +150,7 @@ export default async function handler(req, res) {
     await sql`INSERT INTO aura_planner_data(user_id, data, updated_at) VALUES(${user.id}, ${JSON.stringify(data)}::jsonb, now())
       ON CONFLICT(user_id) DO UPDATE SET data=EXCLUDED.data, updated_at=now()`;
     const today = appDay(req);
+    await autoCompleteLifestyleMissions(sql, user.id, today, data);
     const studyMinutes = data.studyLogs.filter(item => item.date === today).reduce((sum, item) => sum + item.minutes, 0);
     const movementMinutes = Number(data.lifestyle.find(item => item.date === today)?.movement || 0);
     const combos = [

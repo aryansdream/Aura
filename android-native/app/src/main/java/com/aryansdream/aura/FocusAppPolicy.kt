@@ -14,7 +14,9 @@ object FocusAppPolicy {
     )
 
     fun shouldEndFocus(context: Context): Boolean {
-        if (!DeviceHealth.hasUsageAccess(context)) return true
+        // Without Usage Access Android has not told us which app is foregrounded;
+        // preserve the timer instead of treating an unknown app as a violation.
+        if (!DeviceHealth.hasUsageAccess(context)) return false
         val manager = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
         val now = System.currentTimeMillis()
         val events = manager.queryEvents(now - 15_000L, now)
@@ -28,7 +30,7 @@ object FocusAppPolicy {
                 latest = event.timeStamp
             }
         }
-        val foreground = packageName ?: return true
+        val foreground = packageName ?: return false
         val homePackage = context.packageManager.resolveActivity(
             Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME), 0
         )?.activityInfo?.packageName

@@ -26,7 +26,7 @@ class AuraWidgetProvider : AppWidgetProvider() {
             var date = LocalDate.now()
             while (earned.contains(date.toString())) { streak++; date = date.minusDays(1) }
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-                .putString("widget_points", stats.optInt("total").toString())
+                .putString("widget_points", String.format(java.util.Locale.US, "%.2f", stats.optInt("total") / 100.0))
                 .putString("widget_streak", streak.toString())
                 .putBoolean("widget_signed_in", !account.isNull("user"))
                 .apply()

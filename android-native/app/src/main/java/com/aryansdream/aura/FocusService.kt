@@ -68,9 +68,12 @@ class FocusService : Service() {
                 val completed = ((duration - remaining).coerceAtLeast(0) / 120_000L).toInt()
                 while (awarded < completed) {
                     awarded++
-                    runCatching {
-                        AuraApi.request(applicationContext, "/api/planner", JSONObject().put("action", "focus-point").put("sessionId", session).put("segment", awarded).put("subjectId", subjectId))
-                    }
+                    val body = JSONObject().put("action", "focus-point").put("sessionId", session).put("segment", awarded).put("subjectId", subjectId)
+                    runCatching { AuraApi.request(applicationContext, "/api/planner", body) }
+                        .onFailure {
+                            val accountId = runCatching { JSONObject(prefs.getString("account_cache", "{}") ?: "{}").optJSONObject("user")?.optString("id").orEmpty() }.getOrDefault("")
+                            if (accountId.isNotBlank()) AuraApi.queueAction(applicationContext, "/api/planner", body, accountId)
+                        }
                     prefs.edit().putInt("focus_awarded", awarded).apply()
                 }
                 NotificationManagerCompatShim.notify(this@FocusService, NOTIFICATION, notification(remaining, subject))

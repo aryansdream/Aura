@@ -3,6 +3,7 @@ import './planner.css';
 import { adjustedReward } from '../lib/progression.js';
 
 const $ = (id) => document.getElementById(id);
+const formatAP = (value) => (Number(value || 0) / 100).toFixed(2);
 const mobileFocusAvailable = Boolean(navigator.userAgentData?.mobile || /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1));
 document.documentElement.classList.toggle('focus-mobile-enabled', mobileFocusAvailable);
 const THEME_KEY = 'aura_theme_v1';
@@ -174,7 +175,7 @@ const priorityTools = $('homePriorityTools');
 priorityTools.append($('trackerBox'), document.querySelector('.focus-studio'));
 document.querySelector('.home-tools summary').textContent = 'More tools';
 window.addEventListener('aura:points-updated', event => { pending = Number(event.detail?.pending ?? pending); if (event.detail?.total !== undefined) state.total = Number(event.detail.total); refreshPending(); reloadAccount(); });
-window.addEventListener('aura:combo-awarded', event => { const award = event.detail; if (award?.addedPoints) { toast(`${award.name} combo · +${award.addedPoints.toLocaleString()} AP`); reloadAccount(); refreshLeaderboard(); } });
+window.addEventListener('aura:combo-awarded', event => { const award = event.detail; if (award?.addedPoints) { toast(`${award.name} combo · +${formatAP(award.addedPoints)} AP`); reloadAccount(); refreshLeaderboard(); } });
 // Focus time accrues only while the full-screen focus surface is visible.
 const focusStoreKey = 'aura_focus_studio_v1';
 const focusPointIntervalSeconds = 120;
@@ -244,7 +245,7 @@ function awardFocusSegment() {
   focusState.awardedSegments = segment;
   focusState.pendingAwards.push({ sessionId: focusState.sessionId, segment, subjectId: focusState.subjectId, date: activityDate });
   planner.logFocusStudyBlock(focusState.sessionId, segment, focusState.subjectId);
-  persistFocus(); syncFocusAwards(); toast('2 focused minutes · +1 AP earned');
+  persistFocus(); syncFocusAwards(); toast('2 focused minutes · +0.01 AP earned');
 }
 function tickFocus() {
   if (!focusState.running || document.visibilityState !== 'visible') return;
@@ -273,7 +274,7 @@ function renderFocus() {
     const active = Number(button.dataset.focusMinutes) === focusState.minutes;
     button.classList.toggle('active', active); button.setAttribute('aria-pressed', String(active));
   });
-  $('focusStatus').textContent = `${focusState.completed} sessions today · ${focusState.awardedSegments} AP earned`;
+  $('focusStatus').textContent = `${focusState.completed} sessions today · ${formatAP(focusState.awardedSegments)} AP earned`;
   window.AURA_FOCUS_ACTIVE = Boolean(focusState.running);
   const screen = $('focusScreen'); screen.classList.toggle('active', Boolean(focusState.running)); screen.setAttribute('aria-hidden', String(!focusState.running));
   $('focusScreenTime').textContent = `${String(Math.floor(remaining / 60)).padStart(2, '0')}:${String(remaining % 60).padStart(2, '0')}`;
@@ -353,6 +354,7 @@ function message(text, error = false) {
   $('authError').style.color = error ? 'var(--orange)' : 'var(--olive)';
 }
 const installButton = $('installApp');
+const appInstallDialog = $('appInstallDialog');
 let installPrompt = null;
 const isInstalled = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 const isAppleMobile = /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -360,7 +362,7 @@ const isAndroid = /Android/i.test(navigator.userAgent);
 installButton.hidden = isInstalled || (!isAppleMobile && !isAndroid);
 if (!isInstalled) installButton.textContent = isAppleMobile ? 'Add AURA' : 'Install AURA';
 window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); installPrompt = event; installButton.hidden = false; installButton.textContent = 'Install AURA'; });
-installButton.addEventListener('click', async () => {
+async function openWebInstaller() {
   if (!installPrompt) {
     $('toast').textContent = isAppleMobile
       ? 'In Safari, tap Share, then Add to Home Screen.'
@@ -374,9 +376,14 @@ installButton.addEventListener('click', async () => {
   const { outcome } = await installPrompt.userChoice;
   installPrompt = null;
   if (outcome === 'accepted') installButton.hidden = true;
-});
+}
+installButton.addEventListener('click', openWebInstaller);
+document.getElementById('appInstallShortcut')?.addEventListener('click', () => appInstallDialog?.showModal());
+document.getElementById('closeAppInstallDialog')?.addEventListener('click', () => appInstallDialog?.close());
+appInstallDialog?.addEventListener('click', event => { if (event.target === appInstallDialog) appInstallDialog.close(); });
 document.getElementById('installWebOption')?.addEventListener('click', () => installButton.click());
 document.getElementById('installWebHomeOption')?.addEventListener('click', () => installButton.click());
+document.getElementById('installWebDialogOption')?.addEventListener('click', () => { appInstallDialog?.close(); openWebInstaller(); });
 window.addEventListener('appinstalled', () => { installPrompt = null; installButton.hidden = true; });
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('/sw.js').catch(() => {});
 function setAuthMode(signup) {
@@ -391,7 +398,7 @@ function setAuthMode(signup) {
 async function refreshLeaderboard() {
   try {
     const { entries } = await api('/api/leaderboard');
-    $('leaderboardList').innerHTML = entries.map((entry, i) => `<div class="leader-entry"><span>${i + 1}. ${i === 0 ? `${escapeHtml(entry.title || 'Champion')} ` : ''}${escapeHtml(entry.name)}</span><b>${Number(entry.points).toLocaleString()} AP</b></div>`).join('') || '<p class="help">No validated scores yet.</p>';
+    $('leaderboardList').innerHTML = entries.map((entry, i) => `<div class="leader-entry"><span>${i + 1}. ${i === 0 ? `${escapeHtml(entry.title || 'Champion')} ` : ''}${escapeHtml(entry.name)}</span><b>${formatAP(entry.points)} AP</b></div>`).join('') || '<p class="help">No validated scores yet.</p>';
     $('leaderNotice').textContent = 'Class and focus study points count immediately; mission points count after tracker validation.';
   } catch { $('leaderboardList').innerHTML = '<p class="help">Leaderboard unavailable right now.</p>'; }
 }
@@ -399,7 +406,7 @@ function escapeHtml(value) { return String(value).replace(/[&<>"']/g, c => ({'&'
 function refreshPending() {
   let el = $('pendingPoints');
   if (!el) { el = document.createElement('span'); el.id = 'pendingPoints'; el.className = 'pending-ap'; $('totalAP').insertAdjacentElement('afterend', el); }
-  el.textContent = pending ? `${pending} mission AP awaiting today’s tracker` : '';
+  el.textContent = pending ? `${formatAP(pending)} mission AP awaiting today’s tracker` : '';
 }
 function renderPeriodTracker() {
   const selectedMonth = $('periodDate').value || `${localPeriodNow.getFullYear()}-${String(localPeriodNow.getMonth() + 1).padStart(2, '0')}`;
@@ -409,7 +416,7 @@ function renderPeriodTracker() {
   const totalTasks = rows.reduce((sum, row) => sum + Number(row.completed || 0), 0);
   const totalPoints = rows.reduce((sum, row) => sum + Number(row.points || 0), 0);
   $('periodCompleted').textContent = totalTasks.toLocaleString();
-  $('periodPoints').textContent = totalPoints.toLocaleString();
+  $('periodPoints').textContent = formatAP(totalPoints);
   $('periodDays').textContent = rows.length.toLocaleString();
   const count = periodMode === 'month' ? new Date(Number(selectedMonth.slice(0, 4)), Number(selectedMonth.slice(5, 7)), 0).getDate() : 12;
   const buckets = Array.from({ length: count }, () => ({ tasks: 0, points: 0 }));
@@ -418,7 +425,7 @@ function renderPeriodTracker() {
     if (buckets[index]) { buckets[index].tasks += Number(row.completed || 0); buckets[index].points += Number(row.points || 0); }
   }
   const max = Math.max(1, ...buckets.map(item => item.tasks));
-  $('periodChart').innerHTML = buckets.map((item, index) => `<div class="period-bar${item.tasks ? ' active' : ''}" style="height:${Math.max(2, item.tasks / max * 100)}%" title="${periodMode === 'month' ? `${selectedMonth}-${String(index + 1).padStart(2, '0')}` : new Date(selectedYear, index).toLocaleString(undefined, { month: 'long' })}: ${item.tasks} verified tasks · ${item.points} AP"></div>`).join('');
+  $('periodChart').innerHTML = buckets.map((item, index) => `<div class="period-bar${item.tasks ? ' active' : ''}" style="height:${Math.max(2, item.tasks / max * 100)}%" title="${periodMode === 'month' ? `${selectedMonth}-${String(index + 1).padStart(2, '0')}` : new Date(selectedYear, index).toLocaleString(undefined, { month: 'long' })}: ${item.tasks} verified tasks · ${formatAP(item.points)} AP"></div>`).join('');
   $('periodLabels').innerHTML = periodMode === 'month' ? `<span>1</span><span>${Math.ceil(count / 2)}</span><span>${count}</span>` : '<span>Jan</span><span>Apr</span><span>Aug</span><span>Dec</span>';
   $('periodNote').textContent = account ? (rows.length ? `${periodMode === 'month' ? new Date(`${selectedMonth}-01T12:00:00`).toLocaleString(undefined, { month: 'long', year: 'numeric' }) : selectedYear} · verified records only; unsubmitted days are not included.` : `No verified activity for ${periodMode === 'month' ? selectedMonth : selectedYear} yet.`) : 'Sign in to see your monthly and yearly history. Only tracker-verified days count.';
 }
@@ -458,7 +465,7 @@ window.addEventListener('focus', checkValidationReminder);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) checkValidationReminder(); });
 function showTracker(proof) {
   renderValidationReminder();
-  $('trackerStatus').textContent = proof ? `Tracker checked · ${Math.ceil(proof.size_bytes / 1024)} KB · screenshot discarded · mission points validated${Number(proof.balance_bonus) ? ' · +25 AP balance bonus' : ''}.` : (account ? 'Submit at day’s end to validate mission points and claim any balance bonus. Class and focus study points count immediately.' : 'Sign in to submit a tracker.');
+  $('trackerStatus').textContent = proof ? `Tracker checked · ${Math.ceil(proof.size_bytes / 1024)} KB · screenshot discarded · mission points validated${Number(proof.balance_bonus) ? ' · +0.25 AP balance bonus' : ''}.` : (account ? 'Submit at day’s end to validate mission points and claim any balance bonus. Class and focus study points count immediately.' : 'Sign in to submit a tracker.');
   $('trackerStatus').className = `help ${proof ? 'tracker-ok' : ''}`;
   $('trackerFile').disabled = !account || !!proof;
   $('trackerForm').querySelector('button').disabled = !account || !!proof;
@@ -534,7 +541,7 @@ function showAccount(data, options = {}) {
   $('displayName').disabled = false;
   $('leaderName').textContent = data ? data.profile.display_name : 'Sign in';
   $('leaderCaption').textContent = data ? 'Your validated score' : 'Registered AURA scores';
-  $('leaderAP').textContent = data ? `${Number(data.stats.total).toLocaleString()} AP` : '— AP';
+  $('leaderAP').textContent = data ? `${formatAP(data.stats.total)} AP` : '— AP';
   $('saveState').textContent = data ? 'Progress synced to your account' : 'Sign in to sync across devices';
   if (!data) { showTracker(null); refreshLeaderboard(); return; }
   state.name = data.profile.display_name;
@@ -647,7 +654,7 @@ $('missions').addEventListener('click', async (event) => {
     mission.done = true; state.total = result.total; pending = result.pending;
     save(); renderMissions(); renderTasks(); refreshPending(); refreshLeaderboard();
     reloadAccount();
-    toast(`+${result.points} AP pending tracker validation`);
+    toast(`+${formatAP(result.points)} AP pending tracker validation`);
   } catch (error) { button.disabled = false; toast(error.message); }
 }, true);
 $('customForm').addEventListener('submit', async (event) => {
@@ -660,7 +667,7 @@ $('customForm').addEventListener('submit', async (event) => {
     window.AURA_CATALOG.unshift(task);
     $('customTitle').value = '';
     if (!$('category').querySelector('option[value="Your own"]')) $('category').insertAdjacentHTML('beforeend', '<option value="Your own">Your own</option>');
-    $('category').value = 'all'; $('search').value = ''; renderTasks(); toast(`Custom mission saved · up to ${task.points} AP`);
+    $('category').value = 'all'; $('search').value = ''; renderTasks(); toast(`Custom mission saved · up to ${formatAP(task.points)} AP`);
   } catch (error) { toast(error.message); }
 }, true);
 async function saveDisplayName() {

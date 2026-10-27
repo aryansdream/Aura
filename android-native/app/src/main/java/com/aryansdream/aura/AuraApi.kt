@@ -10,6 +10,54 @@ object AuraApi {
     private fun cookies(context: Context) = context.getSharedPreferences("aura_native", Context.MODE_PRIVATE)
     fun clearSession(context: Context) = cookies(context).edit().remove("cookie").apply()
 
+    fun savePlannerDraft(context: Context, data: JSONObject, accountId: String) {
+        cookies(context).edit()
+            .putString("planner_cache", data.toString())
+            .putString("pending_planner", data.toString())
+            .putString("pending_owner", accountId)
+            .apply()
+    }
+
+    fun queueAction(context: Context, path: String, body: JSONObject, accountId: String) {
+        val prefs = cookies(context)
+        val queue = runCatching { org.json.JSONArray(prefs.getString("pending_actions", "[]")) }.getOrDefault(org.json.JSONArray())
+        queue.put(JSONObject().put("path", path).put("body", body).put("owner", accountId))
+        prefs.edit().putString("pending_actions", queue.toString()).apply()
+    }
+
+    fun syncPendingPlanner(context: Context, accountId: String): Boolean {
+        val prefs = cookies(context)
+        val queued = runCatching { org.json.JSONArray(prefs.getString("pending_actions", "[]")) }.getOrDefault(org.json.JSONArray())
+        val remaining = org.json.JSONArray()
+        for (i in 0 until queued.length()) {
+            val action = queued.optJSONObject(i) ?: continue
+            if (action.optString("owner") != accountId) { remaining.put(action); continue }
+            try {
+                request(context, action.optString("path"), action.optJSONObject("body"))
+            } catch (error: HttpFailure) {
+                if (error.status in 400..499 && error.status != 401 && error.status != 429) continue
+                remaining.put(action)
+                for (j in i + 1 until queued.length()) queued.optJSONObject(j)?.let(remaining::put)
+                prefs.edit().putString("pending_actions", remaining.toString()).apply()
+                throw error
+            } catch (error: Exception) {
+                remaining.put(action)
+                for (j in i + 1 until queued.length()) queued.optJSONObject(j)?.let(remaining::put)
+                prefs.edit().putString("pending_actions", remaining.toString()).apply()
+                throw error
+            }
+        }
+        prefs.edit().putString("pending_actions", remaining.toString()).apply()
+        val snapshot = prefs.getString("pending_planner", null) ?: return true
+        if (prefs.getString("pending_owner", null) != accountId) return false
+        request(context, "/api/planner", JSONObject().put("data", JSONObject(snapshot)))
+        // A newer edit may have arrived while this request was in flight; keep that draft queued.
+        if (prefs.getString("pending_planner", null) == snapshot) {
+            prefs.edit().remove("pending_planner").remove("pending_owner").apply()
+        }
+        return true
+    }
+
     class HttpFailure(val status: Int, message: String) : IllegalStateException(message)
 
     fun request(context: Context, path: String, body: JSONObject? = null): JSONObject {
@@ -63,7 +111,7 @@ object AuraApi {
     fun signOut(context: Context) {
         runCatching { request(context, "/api/auth/sign-out", JSONObject()) }
         clearSession(context)
-        cookies(context).edit().remove("account_cache").remove("planner_cache").apply()
+        cookies(context).edit().remove("account_cache").apply()
     }
 
     fun signIn(context: Context, email: String, password: String, create: Boolean, name: String): JSONObject {
