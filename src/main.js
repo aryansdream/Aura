@@ -3,8 +3,6 @@ import './planner.css';
 
 const $ = (id) => document.getElementById(id);
 const formatAP = (value) => (Number(value || 0) / 100).toFixed(2);
-const mobileFocusAvailable = Boolean(navigator.userAgentData?.mobile || /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1));
-document.documentElement.classList.toggle('focus-mobile-enabled', mobileFocusAvailable);
 const THEME_KEY = 'aura_theme_v1';
 function applyTheme(theme) {
   const dark = theme === 'dark';
@@ -169,7 +167,7 @@ const authCall = async (path, body = {}) => {
 const planner = initPlanner(api, () => account);
 const priorityTools = $('homePriorityTools');
 window.addEventListener('aura:points-updated', () => reloadAccount());
-// Focus time accrues only while the full-screen focus surface is visible.
+// Web Focus is unrestricted; the timer keeps counting while the browser tab is in the background.
 const focusStoreKey = 'aura_focus_studio_v1';
 const focusPointIntervalSeconds = 120;
 const focusDay = new Date(); focusDay.setHours(focusDay.getHours() - 2); const focusToday = `${focusDay.getFullYear()}-${String(focusDay.getMonth()+1).padStart(2,'0')}-${String(focusDay.getDate()).padStart(2,'0')}`;
@@ -191,6 +189,8 @@ if (focusState.sessionId && !focusState.sessionId.startsWith('f2-')) {
 focusState.running = false;
 let focusInterval;
 let focusAudioContext;
+let focusPeriodStartedAt = 0;
+let focusPeriodBaseSeconds = focusState.activeSeconds;
 function playFocusTick(at) {
   if (!focusAudioContext || focusAudioContext.state !== 'running') return;
   const oscillator = focusAudioContext.createOscillator(), gain = focusAudioContext.createGain();
@@ -240,11 +240,16 @@ function awardFocusSegment() {
   planner.logFocusStudyBlock(focusState.sessionId, segment, focusState.subjectId);
   persistFocus(); syncFocusAwards(); toast('2 focused minutes · +0.01 AP earned');
 }
+function updateFocusElapsed() {
+  if (!focusState.running || !focusPeriodStartedAt) return;
+  const now = Date.now();
+  focusState.remaining = Math.max(0, Math.ceil((focusState.deadlineAt - now) / 1000));
+  focusState.activeSeconds = focusPeriodBaseSeconds + Math.floor((now - focusPeriodStartedAt) / 1000);
+}
 function tickFocus() {
-  if (!focusState.running || document.visibilityState !== 'visible') return;
-  focusState.remaining = Math.max(0, focusState.remaining - 1);
-  focusState.activeSeconds += 1;
-  if (Math.floor(focusState.activeSeconds / focusPointIntervalSeconds) > focusState.awardedSegments) awardFocusSegment();
+  if (!focusState.running) return;
+  updateFocusElapsed();
+  while (Math.floor(focusState.activeSeconds / focusPointIntervalSeconds) > focusState.awardedSegments) awardFocusSegment();
   if (focusState.remaining <= 0) return finishFocus();
   renderFocus();
 }
@@ -252,6 +257,7 @@ function finishFocus() {
   clearInterval(focusInterval); focusInterval = null;
   focusState.running = false; focusState.remaining = focusState.minutes * 60; focusState.completed += 1;
   focusState.activeSeconds = 0; focusState.awardedSegments = 0; focusState.sessionId = '';
+  focusPeriodStartedAt = 0; focusState.deadlineAt = 0;
   playFocusAlarm();
   persistFocus(); renderFocus();
   $('focusStatus').textContent = `Session complete · ${focusState.completed} today. Take a short break.`;
@@ -300,21 +306,24 @@ $('focusCustomSet').addEventListener('click', () => {
   persistFocus(); renderFocus(); toast(`${minutes}-minute session set`);
 });
 $('focusToggle').addEventListener('click', () => {
-  if (!mobileFocusAvailable) return;
   clearInterval(focusInterval); focusInterval = null;
-  if (focusState.running) focusState.running = false;
-  else {
+  if (focusState.running) {
+    updateFocusElapsed();
+    focusState.running = false; focusPeriodStartedAt = 0; focusState.deadlineAt = 0;
+  } else {
     if (!$('focusSubject').value) { $('focusSubject').focus(); return toast('Choose a subject before starting focus.'); }
     focusState.subjectId = $('focusSubject').value;
     focusState.sessionId ||= `f2-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2,8)}`}`;
     try { const AudioContextType = window.AudioContext || window.webkitAudioContext; if (AudioContextType) { focusAudioContext ||= new AudioContextType(); focusAudioContext.resume(); } } catch {}
-    focusState.running = true; focusInterval = window.setInterval(tickFocus, 1000);
+    focusState.running = true;
+    focusPeriodStartedAt = Date.now(); focusPeriodBaseSeconds = focusState.activeSeconds;
+    focusState.deadlineAt = focusPeriodStartedAt + focusState.remaining * 1000;
+    focusInterval = window.setInterval(tickFocus, 1000);
   }
   persistFocus(); renderFocus();
   if (!focusState.running) window.dispatchEvent(new Event('focus'));
 });
 $('focusLaunch').addEventListener('click', () => {
-  if (!mobileFocusAvailable) return;
   if (focusState.running) return;
   if (location.hash !== '#home') location.hash = '#home';
   window.setTimeout(() => {
@@ -326,17 +335,9 @@ $('focusLaunch').addEventListener('click', () => {
 $('focusReset').addEventListener('click', () => { clearInterval(focusInterval); focusInterval = null; focusState.running = false; focusState.remaining = focusState.minutes * 60; focusState.activeSeconds = 0; focusState.awardedSegments = 0; focusState.sessionId = ''; persistFocus(); renderFocus(); });
 $('focusScreenExit').addEventListener('click', () => { if (focusState.running) $('focusToggle').click(); });
 document.addEventListener('keydown', event => { if (event.key === 'Escape' && focusState.running) $('focusScreenExit').click(); });
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden && focusState.running) {
-    clearInterval(focusInterval); focusInterval = null; focusState.running = false;
-    persistFocus(); renderFocus();
-  }
-});
-window.addEventListener('hashchange', () => {
-  if (focusState.running) { clearInterval(focusInterval); focusInterval = null; focusState.running = false; persistFocus(); renderFocus(); }
-});
+document.addEventListener('visibilitychange', () => { if (!document.hidden && focusState.running) tickFocus(); });
 window.addEventListener('pagehide', () => {
-  if (focusState.running) { clearInterval(focusInterval); focusInterval = null; focusState.running = false; persistFocus(); }
+  if (focusState.running) { updateFocusElapsed(); clearInterval(focusInterval); focusInterval = null; focusState.running = false; focusPeriodStartedAt = 0; focusState.deadlineAt = 0; persistFocus(); }
 });
 $('focusCustomMinutes').value = focusState.minutes;
 renderFocus();

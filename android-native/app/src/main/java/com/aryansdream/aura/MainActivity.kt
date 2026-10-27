@@ -147,8 +147,22 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                 val pendingDraft = if (localPrefs.getString("pending_owner", null) == accountId) localPrefs.getString("pending_planner", null) else null
                 planner = pendingDraft?.let(::JSONObject) ?: plan.optJSONObject("data") ?: JSONObject()
                 val existingSchedule = planner.optJSONArray("schedule") ?: JSONArray()
-                val classesOnly = JSONArray(); for (i in 0 until existingSchedule.length()) existingSchedule.optJSONObject(i)?.takeIf { it.optString("kind", "Class") == "Class" }?.let(classesOnly::put)
-                planner.put("schedule", classesOnly)
+                val subjects = planner.optJSONArray("subjects") ?: JSONArray()
+                val classesOnly = JSONArray()
+                for (i in 0 until existingSchedule.length()) {
+                    val entry = existingSchedule.optJSONObject(i)?.takeIf { it.optString("kind", "Class") == "Class" } ?: continue
+                    if (entry.optString("subjectId").isBlank()) {
+                        val title = entry.optString("title")
+                        var subject = (0 until subjects.length()).mapNotNull { subjects.optJSONObject(it) }.firstOrNull { it.optString("name").equals(title, true) }
+                        if (subject == null) {
+                            subject = JSONObject().put("id", "class_subject_${title.trim().lowercase().replace(Regex("[^a-z0-9]+"), "_")}").put("name", title).put("teacher", "").put("color", "#8B7CF6").put("notes", "")
+                            subjects.put(subject)
+                        }
+                        entry.put("subjectId", subject.optString("id"))
+                    }
+                    classesOnly.put(entry)
+                }
+                planner.put("subjects", subjects).put("schedule", classesOnly)
                 AuraWidgetProvider.sync(context, me)
                 localPrefs.edit().putString("account_cache", me.toString()).putString("planner_cache", planner.toString()).apply()
                 ClassReminderScheduler.sync(context, planner)
@@ -569,6 +583,7 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
     var studyLogMinutes by remember { mutableStateOf("30") }
     var studyLogTopic by remember { mutableStateOf("") }
     val studyLogs = planner.optJSONArray("studyLogs") ?: JSONArray()
+    val attendance = planner.optJSONArray("attendance") ?: JSONArray()
     fun saveSubjects(nextSubjects: JSONArray) { save(JSONObject(planner.toString()).put("subjects", nextSubjects)) }
     fun saveSchedule(nextSchedule: JSONArray) { save(JSONObject(planner.toString()).put("schedule", nextSchedule)) }
 
@@ -583,9 +598,12 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                 val logs = (0 until studyLogs.length()).mapNotNull { studyLogs.optJSONObject(it) }.filter { it.optString("subjectId") == subject.optString("id") }
                 val todayMinutes = logs.filter { it.optString("date") == LocalDate.now().toString() }.sumOf { it.optInt("minutes") }
                 val totalMinutes = logs.sumOf { it.optInt("minutes") }
+                val subjectAttendance = (0 until attendance.length()).mapNotNull { attendance.optJSONObject(it) }.filter { it.optString("subjectId") == subject.optString("id") || it.optString("subjectName").equals(subject.optString("name"), true) }
+                val presentCount = subjectAttendance.count { it.optString("status") == "present" }
+                val absentCount = subjectAttendance.count { it.optString("status") == "absent" }
                 Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) { Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.size(12.dp).background(runCatching { Color(android.graphics.Color.parseColor(subject.optString("color", "#B5A9FF"))) }.getOrDefault(Purple), CircleShape))
-                    Column(Modifier.weight(1f).padding(start = 12.dp)) { Text(subject.optString("name"), fontWeight = FontWeight.SemiBold); Text("Today ${formatStudyTime(todayMinutes)} · Total ${formatStudyTime(totalMinutes)}", color = Muted, fontSize = 11.sp); if (subject.optString("teacher").isNotBlank()) Text(subject.optString("teacher"), color = Muted, fontSize = 10.sp) }
+                    Column(Modifier.weight(1f).padding(start = 12.dp)) { Text(subject.optString("name"), fontWeight = FontWeight.SemiBold); Text("Today ${formatStudyTime(todayMinutes)} · Total ${formatStudyTime(totalMinutes)}", color = Muted, fontSize = 11.sp); Text("Attendance · $presentCount present · $absentCount absent", color = Muted, fontSize = 10.sp); if (subject.optString("teacher").isNotBlank()) Text(subject.optString("teacher"), color = Muted, fontSize = 10.sp) }
                     TextButton(onClick = { subjectToEdit = subject.optString("id"); subjectName = subject.optString("name"); subjectTeacher = subject.optString("teacher"); subjectColor = subject.optString("color", "#8B7CF6"); subjectDialog = true }) { Text("Edit") }
                 } }
             }
@@ -601,10 +619,22 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                     Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(subjectName, fontWeight = FontWeight.SemiBold); Text("${entries.size} class time${if (entries.size == 1) "" else "s"}${if (entries.any { it.optBoolean("reminderEnabled") }) " · start beep on" else ""}", color = Muted, fontSize = 10.sp) }; Text(if (expanded) "⌃" else "⌄", color = Purple, fontSize = 20.sp) }
                     if (expanded) {
                         entries.sortedWith(compareBy({ it.optJSONArray("days")?.joinInts().orEmpty() }, { it.optString("start") })).forEach { entry ->
-                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                Column(Modifier.weight(1f)) { Text("${entry.optJSONArray("days")?.weekdayLabels() ?: entry.optString("date")} · ${entry.optString("start")}–${entry.optString("end")}", fontSize = 12.sp); if (entry.optString("date").isNotBlank()) Text(entry.optString("date"), color = Muted, fontSize = 10.sp) }
-                                TextButton(onClick = { routineToEdit = entry.optString("id"); routineTitle = subjectName; routineStart = entry.optString("start"); routineEnd = entry.optString("end"); routineDate = entry.optString("date"); routineDays = entry.optJSONArray("days")?.joinInts().orEmpty(); routineReminder = entry.optBoolean("reminderEnabled"); routineReminderInterval = 0; routineDialog = true }) { Text("Edit") }
-                                IconButton(onClick = { val updated = JSONArray(); for (i in 0 until schedule.length()) schedule.optJSONObject(i)?.takeIf { it.optString("id") != entry.optString("id") }?.let(updated::put); saveSchedule(updated) }) { Icon(Icons.Default.DeleteOutline, "Delete class time", tint = Color(0xFFFF8D8D)) }
+                            Column(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+                                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                    Column(Modifier.weight(1f)) { Text("${entry.optJSONArray("days")?.weekdayLabels() ?: entry.optString("date")} · ${entry.optString("start")}–${entry.optString("end")}", fontSize = 12.sp); if (entry.optString("date").isNotBlank()) Text(entry.optString("date"), color = Muted, fontSize = 10.sp) }
+                                    TextButton(onClick = { routineToEdit = entry.optString("id"); routineTitle = subjectName; routineStart = entry.optString("start"); routineEnd = entry.optString("end"); routineDate = entry.optString("date"); routineDays = entry.optJSONArray("days")?.joinInts().orEmpty(); routineReminder = entry.optBoolean("reminderEnabled"); routineReminderInterval = 0; routineDialog = true }) { Text("Edit") }
+                                    IconButton(onClick = { val updated = JSONArray(); for (i in 0 until schedule.length()) schedule.optJSONObject(i)?.takeIf { it.optString("id") != entry.optString("id") }?.let(updated::put); saveSchedule(updated) }) { Icon(Icons.Default.DeleteOutline, "Delete class time", tint = Color(0xFFFF8D8D)) }
+                                }
+                                if (classOccursOnDate(entry, LocalDate.now())) {
+                                    val todayKey = LocalDate.now().toString()
+                                    val marked = (0 until attendance.length()).mapNotNull { attendance.optJSONObject(it) }.firstOrNull { it.optString("classId") == entry.optString("id") && it.optString("date") == todayKey }?.optString("status")
+                                    if (marked != null) Text("Today: ${if (marked == "present") "Present" else "Absent"}", color = if (marked == "present") Color(0xFF83D6C4) else Color(0xFFFF8D8D), fontSize = 11.sp, modifier = Modifier.padding(start = 6.dp))
+                                    else Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text("Mark today:", color = Muted, fontSize = 10.sp)
+                                        TextButton(onClick = { save(recordClassAttendance(planner, entry.optString("subjectId"), subjectName, entry.optString("id"), todayKey, "present")) }) { Text("Present", color = Color(0xFF83D6C4)) }
+                                        TextButton(onClick = { save(recordClassAttendance(planner, entry.optString("subjectId"), subjectName, entry.optString("id"), todayKey, "absent")) }) { Text("Absent", color = Color(0xFFFF8D8D)) }
+                                    }
+                                }
                             }
                         }
                         TextButton(onClick = { routineToEdit = null; routineTitle = subjectName; routineStart = "09:00"; routineEnd = "10:00"; routineDate = ""; routineDays = (LocalDate.now().dayOfWeek.value % 7).toString(); routineReminder = false; routineReminderInterval = 0; routineDialog = true }) { Text("+ Add class time") }
@@ -678,8 +708,20 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
         val validDate = routineDate.isBlank() || (routineDate.matches(Regex("\\d{4}-\\d{2}-\\d{2}") ) && runCatching { LocalDate.parse(routineDate) }.isSuccess)
         if ((routineDate.isNotBlank() || days.isNotEmpty()) && validDate && routineStart.matches(Regex("([01]\\d|2[0-3]):[0-5]\\d")) && routineEnd.matches(Regex("([01]\\d|2[0-3]):[0-5]\\d"))) {
             val updated = JSONArray(); for (i in 0 until schedule.length()) { val old = schedule.optJSONObject(i) ?: continue; if (old.optString("id") != id) updated.put(old) }
-            updated.put(JSONObject().put("id", id).put("title", routineTitle.trim()).put("subjectId", "").put("days", JSONArray(days)).put("date", routineDate.trim()).put("overrideWeekday", routineDate.isNotBlank()).put("start", routineStart).put("end", routineEnd).put("kind", "Class").put("reminderEnabled", routineReminder).put("reminderIntervalMinutes", routineReminderInterval))
-            saveSchedule(updated); routineDialog = false
+            val next = JSONObject(planner.toString())
+            val nextSubjects = JSONArray()
+            for (i in 0 until subjects.length()) subjects.optJSONObject(i)?.let(nextSubjects::put)
+            val oldEntry = (0 until schedule.length()).mapNotNull { schedule.optJSONObject(it) }.firstOrNull { it.optString("id") == id }
+            var subjectId = oldEntry?.optString("subjectId").orEmpty().ifBlank { (0 until nextSubjects.length()).mapNotNull { nextSubjects.optJSONObject(it) }.firstOrNull { it.optString("name").equals(routineTitle.trim(), true) }?.optString("id").orEmpty() }
+            if (subjectId.isBlank()) {
+                subjectId = "class_subject_${routineTitle.trim().lowercase().replace(Regex("[^a-z0-9]+"), "_")}"
+                nextSubjects.put(JSONObject().put("id", subjectId).put("name", routineTitle.trim()).put("teacher", "").put("color", "#8B7CF6").put("notes", ""))
+            } else if (oldEntry != null && oldEntry.optString("title") != routineTitle.trim()) {
+                for (i in 0 until nextSubjects.length()) nextSubjects.optJSONObject(i)?.takeIf { it.optString("id") == subjectId }?.put("name", routineTitle.trim())
+            }
+            updated.put(JSONObject().put("id", id).put("title", routineTitle.trim()).put("subjectId", subjectId).put("days", JSONArray(days)).put("date", routineDate.trim()).put("overrideWeekday", routineDate.isNotBlank()).put("start", routineStart).put("end", routineEnd).put("kind", "Class").put("reminderEnabled", routineReminder).put("reminderIntervalMinutes", routineReminderInterval))
+            next.put("subjects", nextSubjects).put("schedule", updated)
+            save(next); routineDialog = false
         }
     }, enabled = routineTitle.trim().isNotEmpty() && (routineDate.isNotBlank() || routineDays.split(",").any { it.trim().toIntOrNull()?.let { day -> day in 0..6 } == true })) { Text("Save class") } }, dismissButton = { TextButton(onClick = { routineDialog = false }) { Text("Cancel") } })
 }
@@ -765,6 +807,14 @@ private fun SubjectStudyChart(subjects: JSONArray, logs: JSONArray) {
             }
         }
     }
+}
+
+private fun classOccursOnDate(entry: JSONObject, date: LocalDate): Boolean {
+    val specificDate = entry.optString("date")
+    if (specificDate.isNotBlank()) return specificDate == date.toString()
+    val days = entry.optJSONArray("days") ?: return false
+    val weekday = date.dayOfWeek.value % 7
+    return (0 until days.length()).any { days.optInt(it) == weekday }
 }
 
 private fun formatStudyTime(minutes: Int): String = if (minutes < 60) "${minutes}m" else "${minutes / 60}h ${minutes % 60}m"

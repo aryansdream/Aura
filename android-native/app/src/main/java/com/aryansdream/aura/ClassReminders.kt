@@ -83,7 +83,7 @@ object ClassReminderScheduler {
     private fun cancel(context: Context, id: String) {
         val alarm = context.getSystemService(AlarmManager::class.java)
         alarm.cancel(pendingIntent(context, id, ""))
-        alarm.cancel(endIntent(context, id, "", ""))
+        alarm.cancel(endIntent(context, id, "", "", ""))
     }
 
     private fun pendingIntent(context: Context, id: String, title: String): PendingIntent {
@@ -91,9 +91,9 @@ object ClassReminderScheduler {
         return PendingIntent.getBroadcast(context, id.hashCode(), intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
     }
 
-    private fun endIntent(context: Context, id: String, title: String, date: String): PendingIntent {
+    private fun endIntent(context: Context, id: String, title: String, date: String, subjectId: String): PendingIntent {
         val intent = Intent(context, ClassReminderReceiver::class.java).setAction(ACTION_CLASS_END)
-            .putExtra("id", id).putExtra("title", title).putExtra("date", date)
+            .putExtra("id", id).putExtra("title", title).putExtra("date", date).putExtra("subjectId", subjectId)
         return PendingIntent.getBroadcast(context, id.hashCode() * 31 + 1, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
     }
 
@@ -109,7 +109,7 @@ object ClassReminderScheduler {
                 candidate.dayOfWeek.value % 7 in allowedDays && candidate.atTime(endTime).atZone(zone).isAfter(now)
             }
         val trigger = day?.atTime(endTime)?.atZone(zone)?.toInstant()?.toEpochMilli() ?: return
-        val pending = endIntent(context, entry.optString("id"), entry.optString("title"), day.toString())
+        val pending = endIntent(context, entry.optString("id"), entry.optString("title"), day.toString(), entry.optString("subjectId"))
         context.getSystemService(AlarmManager::class.java).setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, trigger, pending)
     }
 }
@@ -215,7 +215,9 @@ class ClassReminderReceiver : BroadcastReceiver() {
         val date = intent.getStringExtra("date").orEmpty()
         if (intent.action == ClassReminderScheduler.ACTION_MARK_CLASS || intent.action == ClassReminderScheduler.ACTION_SKIP_CLASS) {
             val prefs = context.getSharedPreferences("aura_native", Context.MODE_PRIVATE)
-            prefs.edit().putString("class_result_${id}_$date", if (intent.action == ClassReminderScheduler.ACTION_MARK_CLASS) "attended" else "not_attended").apply()
+            val status = if (intent.action == ClassReminderScheduler.ACTION_MARK_CLASS) "present" else "absent"
+            prefs.edit().putString("class_result_${id}_$date", status).apply()
+            persistClassAttendance(context, intent.getStringExtra("subjectId").orEmpty(), title, id, date, status)
             context.getSystemService(NotificationManager::class.java).cancel(id.hashCode() + date.hashCode())
             return
         }
@@ -239,8 +241,8 @@ class ClassReminderReceiver : BroadcastReceiver() {
             builder.setDefaults(NotificationCompat.DEFAULT_SOUND or NotificationCompat.DEFAULT_VIBRATE)
         }
         if (intent.action == ClassReminderScheduler.ACTION_CLASS_END) {
-            val yes = PendingIntent.getBroadcast(context, id.hashCode() * 31 + 2, Intent(context, ClassReminderReceiver::class.java).setAction(ClassReminderScheduler.ACTION_MARK_CLASS).putExtra("id", id).putExtra("title", title).putExtra("date", date), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-            val no = PendingIntent.getBroadcast(context, id.hashCode() * 31 + 3, Intent(context, ClassReminderReceiver::class.java).setAction(ClassReminderScheduler.ACTION_SKIP_CLASS).putExtra("id", id).putExtra("title", title).putExtra("date", date), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            val yes = PendingIntent.getBroadcast(context, id.hashCode() * 31 + 2, Intent(context, ClassReminderReceiver::class.java).setAction(ClassReminderScheduler.ACTION_MARK_CLASS).putExtra("id", id).putExtra("title", title).putExtra("date", date).putExtra("subjectId", intent.getStringExtra("subjectId").orEmpty()), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            val no = PendingIntent.getBroadcast(context, id.hashCode() * 31 + 3, Intent(context, ClassReminderReceiver::class.java).setAction(ClassReminderScheduler.ACTION_SKIP_CLASS).putExtra("id", id).putExtra("title", title).putExtra("date", date).putExtra("subjectId", intent.getStringExtra("subjectId").orEmpty()), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
             builder.addAction(0, "Attended", yes).addAction(0, "Not completed", no)
         }
         manager.notify(id.hashCode() + date.hashCode(), builder.build())
