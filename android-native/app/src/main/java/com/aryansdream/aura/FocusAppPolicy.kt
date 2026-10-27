@@ -1,9 +1,11 @@
 package com.aryansdream.aura
 
+import android.app.AppOpsManager
 import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.Intent
+import android.os.Process
 
 object FocusAppPolicy {
     private val distractingPackages = setOf(
@@ -16,7 +18,8 @@ object FocusAppPolicy {
     fun shouldEndFocus(context: Context): Boolean {
         // Without Usage Access Android has not told us which app is foregrounded;
         // preserve the timer instead of treating an unknown app as a violation.
-        if (!DeviceHealth.hasUsageAccess(context)) return false
+        val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
+        if (appOps.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), context.packageName) != AppOpsManager.MODE_ALLOWED) return false
         val manager = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
         val now = System.currentTimeMillis()
         val events = manager.queryEvents(now - 15_000L, now)

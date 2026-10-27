@@ -1,6 +1,10 @@
 package com.aryansdream.aura
 
+import android.app.DatePickerDialog
+import android.app.TimePickerDialog
+import android.app.AlarmManager
 import android.Manifest
+import android.provider.Settings
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
@@ -9,8 +13,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.health.connect.client.HealthConnectClient
-import androidx.health.connect.client.PermissionController
+import androidx.core.app.NotificationManagerCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
@@ -63,21 +66,12 @@ private val Muted = Color(0xFFA3A6B5)
 
 class MainActivity : ComponentActivity() {
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
-    private var healthSyncSignal by mutableIntStateOf(0)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (Build.VERSION.SDK_INT >= 33) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-        val healthPermission = registerForActivityResult(PermissionController.createRequestPermissionResultContract()) { healthSyncSignal++ }
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(primary = Purple, background = Night, surface = Surface, onBackground = Color(0xFFF4F2FC), onSurface = Color(0xFFF4F2FC), secondary = Color(0xFF83D6C4))) {
                 AuraApp(
-                    healthSyncSignal = healthSyncSignal,
-                    onRequestSteps = {
-                        if (HealthConnectClient.getSdkStatus(this) == HealthConnectClient.SDK_AVAILABLE) healthPermission.launch(setOf(DeviceHealth.stepPermission))
-                        else startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("market://details?id=com.google.android.apps.healthdata")))
-                    },
-                    onUsageAccess = { startActivity(Intent(android.provider.Settings.ACTION_USAGE_ACCESS_SETTINGS)) },
-                    onRefreshDeviceData = { healthSyncSignal++ },
                     onStartFocus = { subjectId, subject, minutes ->
                         val intent = Intent(this, FocusService::class.java).putExtra("subjectId", subjectId).putExtra("subject", subject).putExtra("duration", minutes * 60_000L)
                             .putExtra("session", java.util.UUID.randomUUID().toString())
@@ -88,8 +82,6 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
-
-    override fun onResume() { super.onResume(); healthSyncSignal++ }
 
     override fun onStop() {
         super.onStop()
@@ -105,7 +97,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAccess: () -> Unit, onRefreshDeviceData: () -> Unit, onStartFocus: (String, String, Int) -> Unit, onStopFocus: () -> Unit) {
+private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
     val localPrefs = remember { context.getSharedPreferences("aura_native", 0) }
@@ -123,14 +115,6 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
     var subjectChoice by remember { mutableStateOf("") }
     var focusMinutes by remember { mutableIntStateOf(25) }
     var focusNow by remember { mutableLongStateOf(0L) }
-    var steps by remember { mutableStateOf("") }
-    var screenTime by remember { mutableStateOf("") }
-    var calories by remember { mutableStateOf("") }
-    var showMissions by remember { mutableStateOf(context.getSharedPreferences("aura_native", 0).getBoolean("show_missions", true)) }
-    var usageAccess by remember { mutableStateOf(false) }
-    var stepPermissionGranted by remember { mutableStateOf(false) }
-    var deviceScreenMinutes by remember { mutableStateOf<Int?>(null) }
-    var syncStatus by remember { mutableStateOf("") }
     var syncMessage by remember { mutableStateOf("") }
     val focusFullScreen = page == "Focus" && localPrefs.getBoolean("focus_running", false)
     BackHandler(enabled = focusFullScreen) {
@@ -162,11 +146,13 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
                 val accountId = user?.optString("id").orEmpty()
                 val pendingDraft = if (localPrefs.getString("pending_owner", null) == accountId) localPrefs.getString("pending_planner", null) else null
                 planner = pendingDraft?.let(::JSONObject) ?: plan.optJSONObject("data") ?: JSONObject()
+                val existingSchedule = planner.optJSONArray("schedule") ?: JSONArray()
+                val classesOnly = JSONArray(); for (i in 0 until existingSchedule.length()) existingSchedule.optJSONObject(i)?.takeIf { it.optString("kind", "Class") == "Class" }?.let(classesOnly::put)
+                planner.put("schedule", classesOnly)
                 AuraWidgetProvider.sync(context, me)
                 localPrefs.edit().putString("account_cache", me.toString()).putString("planner_cache", planner.toString()).apply()
                 ClassReminderScheduler.sync(context, planner)
-                val health = planner.optJSONArray("lifestyle")?.lastObjectForDay(LocalDate.now().toString())
-                if (health != null) { steps = health.optInt("steps").takeIf { it > 0 }?.toString() ?: ""; screenTime = health.optInt("screenTime").takeIf { it > 0 }?.toString() ?: ""; calories = health.optInt("calories").takeIf { it > 0 }?.toString() ?: "" }
+                TaskReminderScheduler.sync(context, planner)
                 if (subjectChoice.isBlank()) subjectChoice = planner.optJSONArray("subjects")?.optJSONObject(0)?.optString("id").orEmpty()
             } catch (e: Exception) {
                 // Keep the signed-in account and its last synced data visible during outages or expired connections.
@@ -199,42 +185,6 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
         }
     }
 
-    LaunchedEffect(page, healthSyncSignal, user?.optString("id")) {
-        if (page == "Life" && user != null) {
-            stepPermissionGranted = withContext(Dispatchers.IO) { runCatching { DeviceHealth.hasStepPermission(context) }.getOrDefault(false) }
-            val readings = withContext(Dispatchers.IO) {
-                val stepsRead = if (stepPermissionGranted) runCatching { DeviceHealth.healthSteps(context) } else Result.success(null)
-                val screenRead = runCatching { DeviceHealth.todayScreenMinutes(context) }.getOrNull()
-                Triple(stepsRead, screenRead, DeviceHealth.hasUsageAccess(context))
-            }
-            usageAccess = readings.third
-            deviceScreenMinutes = readings.second
-            val syncedSteps = readings.first.getOrNull()?.toString()
-            val syncedScreen = readings.second?.toString()
-            if (syncedSteps != null) steps = syncedSteps
-            if (syncedScreen != null) screenTime = syncedScreen
-            syncStatus = buildList {
-                if (!stepPermissionGranted) add("Connect Health Connect and allow AURA to read Steps.")
-                else if (readings.first.isFailure) add("Health Connect step read failed: ${readings.first.exceptionOrNull()?.message ?: "check its permissions"}")
-                else if (syncedSteps == null || syncedSteps == "0") add("No step records have reached Health Connect today. Check that your phone or health app is writing steps there.")
-                if (!readings.third) add("Allow Usage Access for AURA in Android Settings to read screen use.")
-                else if (syncedScreen == null) add("Android did not return screen-use data. Reopen Life and refresh device data.")
-                else add("Screen use is estimated from Android foreground-app activity; Android may count it differently from Digital Wellbeing.")
-            }.joinToString(" ")
-            if (syncedSteps != null || syncedScreen != null) {
-                try {
-                    val saved = saveLifeEntry(context, planner, syncedSteps ?: steps, syncedScreen ?: screenTime, calories, user?.optString("id").orEmpty())
-                    planner = saved
-                    syncStatus = "$syncStatus Saved on this device.".trim()
-                    try {
-                        withContext(Dispatchers.IO) { AuraApi.syncPendingPlanner(context, user?.optString("id").orEmpty()) }
-                        syncStatus = "$syncStatus Synced to your AURA account.".trim()
-                    } catch (_: Exception) { syncStatus = "$syncStatus Will retry when connected.".trim() }
-                } catch (e: Exception) { syncStatus = e.message ?: "Device data could not save locally." }
-            }
-        }
-    }
-
     if (user == null) {
         AuthScreen(creating, { creating = !creating }, loginEmail, { loginEmail = it }, password, { password = it }, displayName, { displayName = it }, busy, error) {
             scope.launch {
@@ -246,69 +196,58 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
         return
     }
 
+    fun saveNativePlanner(next: JSONObject, successMessage: String) {
+        planner = next
+        AuraApi.savePlannerDraft(context, next, user?.optString("id").orEmpty())
+        ClassReminderScheduler.sync(context, next)
+        TaskReminderScheduler.sync(context, next)
+        scope.launch {
+            busy = true
+            try { withContext(Dispatchers.IO) { AuraApi.syncPendingPlanner(context, user?.optString("id").orEmpty()) }; syncMessage = successMessage }
+            catch (_: Exception) { syncMessage = "Saved on this device. AURA will sync when connected." }
+            busy = false
+        }
+    }
+
     Scaffold(containerColor = if (focusFullScreen) Color.Black else Night, bottomBar = {
         if (!focusFullScreen) NavigationBar(containerColor = Surface, contentColor = Muted) {
-            listOf("Today" to Icons.Default.Home, "Focus" to Icons.Default.Timer, "Schedule" to Icons.Default.CalendarMonth, "Life" to Icons.Default.Favorite, "Table" to Icons.Default.Leaderboard, "Info" to Icons.Default.Info).forEach { (label, icon) ->
-                NavigationBarItem(selected = page == label, onClick = { page = label; if (label == "Table") scope.launch { leaderboard = withContext(Dispatchers.IO) { AuraApi.request(context, "/api/leaderboard").optJSONArray("entries") ?: JSONArray() } } }, icon = { Icon(icon, contentDescription = label) }, label = { Text(label, fontSize = 10.sp) })
+            listOf("Today" to Icons.Default.Home, "Focus" to Icons.Default.Timer, "Subjects" to Icons.Default.MenuBook, "Classes" to Icons.Default.CalendarMonth, "Tasks" to Icons.Default.Alarm, "More" to Icons.Default.MoreVert).forEach { (label, icon) ->
+                NavigationBarItem(selected = page == label || (label == "More" && page in setOf("Table", "Info")), onClick = { page = label; if (label == "More") { } }, icon = { Icon(icon, contentDescription = label) }, label = { Text(label, fontSize = 10.sp) })
             }
         }
     }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).background(if (focusFullScreen) Color.Black else Night)) {
             if (!focusFullScreen) Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Column { Text("A U R A   ∞", color = Purple, fontWeight = FontWeight.Black, letterSpacing = 3.sp, fontSize = 17.sp); Text("DAILY PRACTICE", color = Muted, fontSize = 9.sp, letterSpacing = 2.sp) }
+                Row(verticalAlignment = Alignment.CenterVertically) { Box(Modifier.size(42.dp), contentAlignment = Alignment.Center) { Text("∞", color = Purple, fontSize = 39.sp, fontWeight = FontWeight.Bold); Text("AURA", color = Color.White, fontSize = 7.sp, fontWeight = FontWeight.Black, letterSpacing = .5.sp) }; Column(Modifier.padding(start = 6.dp)) { Text("AURA", color = Purple, fontWeight = FontWeight.Black, letterSpacing = 2.sp, fontSize = 15.sp); Text("Aura-Coz you need it!", color = Muted, fontSize = 10.sp) } }
                 IconButton(onClick = { load() }) { Icon(Icons.Default.Refresh, "Refresh", tint = Muted) }
             }
             if (!focusFullScreen && error.isNotBlank()) Text(error, Modifier.padding(horizontal = 20.dp), color = Color(0xFFFF8D8D), fontSize = 12.sp)
             if (!focusFullScreen && syncMessage.isNotBlank() && error.isBlank()) Text(syncMessage, Modifier.padding(horizontal = 20.dp), color = Color(0xFF83D6C4), fontSize = 11.sp)
             when (page) {
-                "Today" -> HomePage(account, planner, busy, showMissions, { showMissions = !showMissions; context.getSharedPreferences("aura_native", 0).edit().putBoolean("show_missions", showMissions).apply() }, onOpenStudy = { page = "Schedule" }, onAddMission = { title, difficulty -> scope.launch {
-                    busy = true
-                    try {
-                        withContext(Dispatchers.IO) {
-                            val created = AuraApi.request(context, "/api/custom", JSONObject().put("title", title).put("difficulty", difficulty)).optJSONObject("task") ?: error("Could not create mission.")
-                            AuraApi.request(context, "/api/select", JSONObject().put("taskId", created.optString("id")))
-                        }
-                        syncMessage = "Daily mission added."; load()
-                    } catch (e: Exception) { busy = false; error = e.message ?: "Could not add the mission." }
-                } }, onRemoveMission = { id -> scope.launch {
-                    busy = true
-                    try { withContext(Dispatchers.IO) { AuraApi.request(context, "/api/select", JSONObject().put("action", "remove").put("taskId", id)) }; syncMessage = "Daily mission removed."; load() }
-                    catch (e: Exception) { busy = false; error = e.message ?: "Could not remove the mission." }
-                } }, onComplete = { id -> scope.launch {
-                    val body = JSONObject().put("taskId", id)
-                    try { withContext(Dispatchers.IO) { AuraApi.request(context, "/api/complete", body) }; load() }
-                    catch (_: Exception) { AuraApi.queueAction(context, "/api/complete", body, user?.optString("id").orEmpty()); syncMessage = "Mission saved on this device; it will sync when connected." }
-                } })
+                "Today" -> HomePage(account, planner, onOpenStudy = { page = "Classes" })
                 "Focus" -> FocusPage(planner.optJSONArray("subjects") ?: JSONArray(), subjectChoice, { subjectChoice = it }, focusMinutes, { focusMinutes = it }, context.getSharedPreferences("aura_native", 0).getLong("focus_deadline", 0), focusNow, onStartFocus, onStopFocus)
-                "Schedule" -> StudyPage(planner) { next ->
+                "Subjects" -> StudyPage(planner, "Subjects") { next -> saveNativePlanner(next, "Subjects saved and synced.") }
+                "Classes" -> StudyPage(planner, "Classes") { next -> saveNativePlanner(next, "Class timetable saved and synced.") }
+                "Tasks" -> TasksPage(context, planner) { next ->
                     planner = next
                     AuraApi.savePlannerDraft(context, next, user?.optString("id").orEmpty())
-                    ClassReminderScheduler.sync(context, next)
+                    TaskReminderScheduler.sync(context, next)
                     scope.launch {
                         busy = true
-                        try { withContext(Dispatchers.IO) { AuraApi.syncPendingPlanner(context, user?.optString("id").orEmpty()) }; syncMessage = "Study space saved and synced." }
-                        catch (_: Exception) { syncMessage = "Study space saved on this device. It will sync when connected." }
+                        try { withContext(Dispatchers.IO) { AuraApi.syncPendingPlanner(context, user?.optString("id").orEmpty()) }; syncMessage = "Task saved and reminder scheduled." }
+                        catch (_: Exception) { syncMessage = "Task saved on this device. It will sync when connected." }
                         busy = false
                     }
                 }
-                "Life" -> LifePage(steps, { steps = it }, screenTime, { screenTime = it }, calories, { calories = it }, busy, deviceScreenMinutes, stepPermissionGranted, usageAccess, syncStatus,
-                    connectSteps = { if (stepPermissionGranted) onRefreshDeviceData() else onRequestSteps() },
-                    usageSettings = { if (usageAccess) onRefreshDeviceData() else onUsageAccess() },
-                    refreshDeviceData = onRefreshDeviceData) {
-                    scope.launch {
-                        busy = true
-                        try {
-                            planner = saveLifeEntry(context, planner, steps, screenTime, calories, user?.optString("id").orEmpty())
-                            try {
-                                withContext(Dispatchers.IO) { AuraApi.syncPendingPlanner(context, user?.optString("id").orEmpty()) }
-                                syncMessage = "Today's log saved and synced."
-                            } catch (_: Exception) { syncMessage = "Today's log is saved on this device and will sync when connected." }
-                        } catch (e: Exception) { error = e.message ?: "Could not save today's log." }
-                        busy = false
-                    }
-                }
+                "More" -> MorePage(
+                    onTable = {
+                        page = "Table"
+                        scope.launch { leaderboard = withContext(Dispatchers.IO) { AuraApi.request(context, "/api/leaderboard").optJSONArray("entries") ?: JSONArray() } }
+                    },
+                    onInfo = { page = "Info" }
+                )
                 "Table" -> LeaderboardPage(leaderboard)
-                else -> InfoPage(onSignOut = {
+                "Info" -> InfoPage(onSignOut = {
                     scope.launch {
                         busy = true
                         withContext(Dispatchers.IO) { AuraApi.signOut(context) }
@@ -335,41 +274,19 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
     }
 }
 
-@Composable private fun HomePage(account: JSONObject?, planner: JSONObject, busy: Boolean, showMissions: Boolean, toggleMissions: () -> Unit, onOpenStudy: () -> Unit, onAddMission: (String, String) -> Unit, onRemoveMission: (String) -> Unit, onComplete: (String) -> Unit) {
+@Composable private fun HomePage(account: JSONObject?, planner: JSONObject, onOpenStudy: () -> Unit) {
     val stats = account?.optJSONObject("stats") ?: JSONObject()
-    val missions = account?.optJSONArray("today") ?: JSONArray()
     val earnedDays = (0 until (account?.optJSONArray("days")?.length() ?: 0)).mapNotNull { account?.optJSONArray("days")?.optString(it) }.toSet()
-    var addMissionDialog by remember { mutableStateOf(false) }
-    var missionTitle by remember { mutableStateOf("") }
-    var missionDifficulty by remember { mutableStateOf("Moderate") }
     var streak = 0
     var date = LocalDate.now()
     while (earnedDays.contains(date.toString())) { streak++; date = date.minusDays(1) }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(bottom = 24.dp)) {
         item { Text("TODAY · ${LocalDate.now()}", color = Muted, fontSize = 10.sp, letterSpacing = 1.5.sp) }
-        item { Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(20.dp)) { Column(Modifier.fillMaxWidth().padding(20.dp)) { Text("YOUR AURA", color = Muted, fontSize = 10.sp, letterSpacing = 1.5.sp); Text(formatAuraPoints(stats.optInt("total")), fontSize = 42.sp, fontWeight = FontWeight.Black, color = Purple); Text("${formatAuraPoints(stats.optInt("pending"))} AP waiting for validation", color = Muted, fontSize = 12.sp); Spacer(Modifier.height(14.dp)); Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Metric("DAY STREAK", "$streak ∞"); Metric("COMPLETED", "${stats.optInt("completed")}") } } } }
+        item { Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(20.dp)) { Column(Modifier.fillMaxWidth().padding(20.dp)) { Text("YOUR AURA", color = Muted, fontSize = 10.sp, letterSpacing = 1.5.sp); Text(formatAuraPoints(stats.optInt("total")), fontSize = 42.sp, fontWeight = FontWeight.Black, color = Purple); Spacer(Modifier.height(14.dp)); Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Metric("DAY STREAK", "$streak ∞"); Metric("COMPLETED", "${stats.optInt("completed")}") } } } }
         item { HomeTimetable(planner, onOpenStudy) }
-        item { Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { SectionTitle("Today's missions", if (showMissions) "${missions.length()} selected" else "Hidden from home") }; TextButton(onClick = { missionTitle = ""; missionDifficulty = "Moderate"; addMissionDialog = true }) { Text("+ Add") }; TextButton(onClick = toggleMissions) { Text(if (showMissions) "Hide" else "Show") } } }
-        if (showMissions && missions.length() == 0) item { EmptyCard("Your daily missions will appear here after you add them on AURA.") }
-        if (showMissions) items((0 until missions.length()).mapNotNull { missions.optJSONObject(it) }) { task ->
-            Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) {
-                Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) { Text(task.optString("title"), fontWeight = FontWeight.SemiBold); Text("${task.optString("category")} · ${formatAuraPoints(task.optInt("points"))} AP", color = Muted, fontSize = 11.sp) }
-                    if (task.optBoolean("done")) Text("DONE", color = Color(0xFF83D6C4), fontSize = 10.sp, fontWeight = FontWeight.Bold) else Button(onClick = { onComplete(task.optString("task_id")) }, enabled = !busy, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)) { Text("Done", fontSize = 11.sp) }
-                    IconButton(onClick = { onRemoveMission(task.optString("task_id")) }, enabled = !busy) { Icon(Icons.Default.DeleteOutline, "Remove mission", tint = Color(0xFFFF8D8D)) }
-                }
-            }
-        }
+
     }
-    if (addMissionDialog) AlertDialog(onDismissRequest = { addMissionDialog = false }, title = { Text("Add daily mission") }, text = {
-        Column {
-            AuraField("Mission name", missionTitle, { missionTitle = it })
-            Text("Difficulty", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
-                listOf("Easy", "Moderate", "Hard", "Challenging").forEach { level -> FilterChip(selected = missionDifficulty == level, onClick = { missionDifficulty = level }, label = { Text(level, fontSize = 10.sp) }) }
-            }
-        }
-    }, confirmButton = { TextButton(onClick = { onAddMission(missionTitle.trim(), missionDifficulty); addMissionDialog = false }, enabled = missionTitle.trim().length >= 3 && !busy) { Text("Add to today") } }, dismissButton = { TextButton(onClick = { addMissionDialog = false }) { Text("Cancel") } })
+
 }
 
 @Composable private fun HomeTimetable(planner: JSONObject, onOpenStudy: () -> Unit) {
@@ -426,7 +343,7 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
                     }
                 }
             }
-            TextButton(onClick = onOpenStudy, modifier = Modifier.align(Alignment.End), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Open task scheduler →", fontSize = 10.sp) }
+            TextButton(onClick = onOpenStudy, modifier = Modifier.align(Alignment.End), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Open class timetable →", fontSize = 10.sp) }
         }
     }
 }
@@ -515,8 +432,104 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
     }
 }
 
+@Composable private fun MorePage(onTable: () -> Unit, onInfo: () -> Unit) {
+    Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        SectionTitle("More", "Community and AURA")
+        Card(onClick = onTable, colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(16.dp)) { Row(Modifier.fillMaxWidth().padding(20.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Leaderboard, null, tint = Purple); Column(Modifier.weight(1f).padding(start = 14.dp)) { Text("Common table", fontWeight = FontWeight.Bold); Text("See the community leaderboard", color = Muted, fontSize = 12.sp) }; Icon(Icons.Default.ChevronRight, null, tint = Muted) } }
+        Card(onClick = onInfo, colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(16.dp)) { Row(Modifier.fillMaxWidth().padding(20.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Info, null, tint = Purple); Column(Modifier.weight(1f).padding(start = 14.dp)) { Text("About AURA", fontWeight = FontWeight.Bold); Text("Point rules, app details and connect", color = Muted, fontSize = 12.sp) }; Icon(Icons.Default.ChevronRight, null, tint = Muted) } }
+    }
+}
+
+@Composable private fun TasksPage(context: android.content.Context, planner: JSONObject, save: (JSONObject) -> Unit) {
+    var title by remember { mutableStateOf("") }
+    var reminderType by remember { mutableStateOf("notification") }
+    var scheduledAt by remember { mutableStateOf(LocalDateTime.now().plusHours(1).withSecond(0).withNano(0)) }
+    val tasks = planner.optJSONArray("tasks") ?: JSONArray()
+    val alarmManager = context.getSystemService(AlarmManager::class.java)
+    val hasExactPermission = Build.VERSION.SDK_INT < Build.VERSION_CODES.S || alarmManager.canScheduleExactAlarms()
+    val notificationsEnabled = NotificationManagerCompat.from(context).areNotificationsEnabled()
+    var taskError by remember { mutableStateOf("") }
+    val formatter = DateTimeFormatter.ofPattern("EEE, d MMM · h:mm a")
+    fun saveTasks(next: JSONArray) { save(JSONObject(planner.toString()).put("tasks", next)) }
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(bottom = 24.dp)) {
+        item { SectionTitle("Task scheduler", "One-time tasks · Android reminders") }
+        if (!notificationsEnabled && reminderType != "none") item {
+            Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) { Column(Modifier.fillMaxWidth().padding(14.dp)) { Text("Enable AURA notifications", fontWeight = FontWeight.SemiBold); Text("Android is blocking AURA notifications. Enable them to receive scheduled reminders.", color = Muted, fontSize = 11.sp); TextButton(onClick = { runCatching { context.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)) } }) { Text("Open notification settings") } } }
+        }
+        item { AuraField("Task name", title, { title = it }) }
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(16.dp)) {
+                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("WHEN", color = Muted, fontSize = 10.sp, letterSpacing = 1.2.sp)
+                    Text(scheduledAt.format(formatter), fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = {
+                            DatePickerDialog(context, { _, year, month, day -> scheduledAt = scheduledAt.withYear(year).withMonth(month + 1).withDayOfMonth(day) }, scheduledAt.year, scheduledAt.monthValue - 1, scheduledAt.dayOfMonth).show()
+                        }) { Text("Choose date") }
+                        OutlinedButton(onClick = {
+                            TimePickerDialog(context, { _, hour, minute -> scheduledAt = scheduledAt.withHour(hour).withMinute(minute) }, scheduledAt.hour, scheduledAt.minute, false).show()
+                        }) { Text("Choose time") }
+                    }
+                }
+            }
+        }
+        item {
+            Text("REMINDER", color = Muted, fontSize = 10.sp, letterSpacing = 1.2.sp)
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                listOf("none" to "None", "notification" to "Notification", "alarm" to "Alarm").forEach { (value, label) ->
+                    FilterChip(selected = reminderType == value, onClick = { reminderType = value }, label = { Text(label) })
+                }
+            }
+            Text(if (reminderType == "alarm") "Alarm uses Android’s alarm clock and rings even when AURA is closed." else if (reminderType == "notification") "Android posts this notification at the scheduled time, even if AURA is closed." else "No reminder will be sent.", color = Muted, fontSize = 11.sp)
+            if (taskError.isNotBlank()) Text(taskError, color = Color(0xFFFF8D8D), fontSize = 11.sp)
+        }
+        if (reminderType == "notification" && !hasExactPermission) item {
+            Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) {
+                Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                    Text("Allow exact reminders", fontWeight = FontWeight.SemiBold)
+                    Text("Android may delay notifications until you allow AURA to use Alarms & reminders.", color = Muted, fontSize = 11.sp)
+                    TextButton(onClick = {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) runCatching { context.startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, android.net.Uri.parse("package:${context.packageName}"))) }
+                    }) { Text("Open Android settings") }
+                }
+            }
+        }
+        item { Button(onClick = {
+            if (title.trim().isEmpty()) return@Button
+            if (!scheduledAt.isAfter(LocalDateTime.now())) { taskError = "Choose a time in the future."; return@Button }
+            if (reminderType != "none" && !notificationsEnabled) { taskError = "Enable notifications in Android settings first."; return@Button }
+            if (reminderType == "notification" && !hasExactPermission) { taskError = "Allow exact alarms in Android settings to schedule this notification."; return@Button }
+            taskError = ""
+            val updated = JSONArray(); for (i in 0 until tasks.length()) tasks.optJSONObject(i)?.let(updated::put)
+            val dateTime = scheduledAt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm"))
+            updated.put(JSONObject().put("id", "task_${java.util.UUID.randomUUID()}").put("title", title.trim()).put("deadline", dateTime).put("reminderType", reminderType).put("done", false).put("createdAt", System.currentTimeMillis()))
+            saveTasks(updated); title = ""; taskError = ""
+        }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) { Text("Save scheduled task") } }
+        item { SectionTitle("Your tasks", "Tasks stay separate from subjects and classes") }
+        if (tasks.length() == 0) item { EmptyCard("Your scheduled tasks will appear here.") }
+        items((0 until tasks.length()).mapNotNull { tasks.optJSONObject(it) }.sortedBy { it.optString("deadline") }) { task ->
+            val date = runCatching { LocalDateTime.parse(task.optString("deadline"), DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm")) }.getOrNull()
+            Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) {
+                Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(task.optString("title"), fontWeight = FontWeight.SemiBold)
+                        Text(date?.format(formatter) ?: task.optString("deadline"), color = Muted, fontSize = 11.sp)
+                        val type = task.optString("reminderType", "none")
+                        if (type != "none") Text(if (type == "alarm") "Alarm set" else "Notification set", color = Purple, fontSize = 10.sp)
+                        if (task.optBoolean("done")) Text("Completed", color = Color(0xFF83D6C4), fontSize = 10.sp)
+                    }
+                    TextButton(onClick = {
+                        val updated = JSONArray(); for (i in 0 until tasks.length()) { val old = tasks.optJSONObject(i) ?: continue; updated.put(if (old.optString("id") == task.optString("id")) JSONObject(old.toString()).put("done", !old.optBoolean("done")) else old) }; saveTasks(updated)
+                    }) { Text(if (task.optBoolean("done")) "Reopen" else "Done") }
+                    IconButton(onClick = { val updated = JSONArray(); for (i in 0 until tasks.length()) tasks.optJSONObject(i)?.takeIf { it.optString("id") != task.optString("id") }?.let(updated::put); saveTasks(updated) }) { Icon(Icons.Default.DeleteOutline, "Delete task", tint = Color(0xFFFF8D8D)) }
+                }
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable private fun StudyPage(planner: JSONObject, save: (JSONObject) -> Unit) {
+@Composable private fun StudyPage(planner: JSONObject, mode: String, save: (JSONObject) -> Unit) {
     val subjects = planner.optJSONArray("subjects") ?: JSONArray()
     val schedule = planner.optJSONArray("schedule") ?: JSONArray()
     var subjectDialog by remember { mutableStateOf(false) }
@@ -531,12 +544,9 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
     var routineEnd by remember { mutableStateOf("10:00") }
     var routineDate by remember { mutableStateOf("") }
     var routineDays by remember { mutableStateOf((LocalDate.now().dayOfWeek.value % 7).toString()) }
-    var routineKind by remember { mutableStateOf("Study") }
     var routineReminder by remember { mutableStateOf(false) }
     var routineReminderInterval by remember { mutableIntStateOf(60) }
     var reminderMenu by remember { mutableStateOf(false) }
-    var routineSubject by remember { mutableStateOf("") }
-    var subjectMenu by remember { mutableStateOf(false) }
     var logStudyDialog by remember { mutableStateOf(false) }
     var studyLogSubject by remember { mutableStateOf(subjects.optJSONObject(0)?.optString("id").orEmpty()) }
     var studyLogMinutes by remember { mutableStateOf("30") }
@@ -546,35 +556,32 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
     fun saveSchedule(nextSchedule: JSONArray) { save(JSONObject(planner.toString()).put("schedule", nextSchedule)) }
 
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(bottom = 20.dp)) {
-        item { Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { SectionTitle("Task scheduler", "Classes, study blocks, routines & reminders") }; TextButton(onClick = { routineToEdit = null; routineTitle = ""; routineStart = "09:00"; routineEnd = "10:00"; routineDate = ""; routineDays = (LocalDate.now().dayOfWeek.value % 7).toString(); routineKind = "Study"; routineSubject = ""; routineReminder = false; routineReminderInterval = 60; routineDialog = true }) { Text("+ Schedule task") } } }
-        item { Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { SectionTitle("Study space", "Subjects and study time") }; TextButton(onClick = { subjectToEdit = null; subjectName = ""; subjectTeacher = ""; subjectColor = "#8B7CF6"; subjectDialog = true }) { Text("+ Subject") } } }
-        item { Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { SectionTitle("Study time", "Per subject · focus sessions + manual logs") }; TextButton(onClick = { studyLogSubject = subjects.optJSONObject(0)?.optString("id").orEmpty(); studyLogMinutes = "30"; studyLogTopic = ""; logStudyDialog = true }, enabled = subjects.length() > 0) { Text("+ Log time") } } }
-        items((0 until subjects.length()).mapNotNull { subjects.optJSONObject(it) }) { subject ->
-            val subjectLogs = (0 until studyLogs.length()).mapNotNull { studyLogs.optJSONObject(it) }.filter { it.optString("subjectId") == subject.optString("id") }
-            val todayMinutes = subjectLogs.filter { it.optString("date") == LocalDate.now().toString() }.sumOf { it.optInt("minutes") }
-            val totalMinutes = subjectLogs.sumOf { it.optInt("minutes") }
-            Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) { Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(10.dp).background(runCatching { Color(android.graphics.Color.parseColor(subject.optString("color", "#B5A9FF"))) }.getOrDefault(Purple), CircleShape))
-                Column(Modifier.weight(1f).padding(start = 10.dp)) { Text(subject.optString("name"), fontWeight = FontWeight.SemiBold); Text("Today ${formatStudyTime(todayMinutes)} · Total ${formatStudyTime(totalMinutes)}", color = Muted, fontSize = 11.sp) }
-            } }
+        if (mode == "Subjects") {
+            item { Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { SectionTitle("Subjects", "Study time tracked by subject") }; TextButton(onClick = { subjectToEdit = null; subjectName = ""; subjectTeacher = ""; subjectColor = "#8B7CF6"; subjectDialog = true }) { Text("+ Subject") } } }
+            item { Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { SectionTitle("Study hours", "Focus timer + manual logs") }; TextButton(onClick = { studyLogSubject = subjects.optJSONObject(0)?.optString("id").orEmpty(); studyLogMinutes = "30"; studyLogTopic = ""; logStudyDialog = true }, enabled = subjects.length() > 0) { Text("+ Log time") } } }
+            item { Text("Only Focus timer sessions earn Aura Points. Manually logged hours are saved for your study record only.", color = Muted, fontSize = 11.sp) }
+            if (subjects.length() == 0) item { EmptyCard("Add your first subject to start tracking study time.") }
+            items((0 until subjects.length()).mapNotNull { subjects.optJSONObject(it) }) { subject ->
+                val logs = (0 until studyLogs.length()).mapNotNull { studyLogs.optJSONObject(it) }.filter { it.optString("subjectId") == subject.optString("id") }
+                val todayMinutes = logs.filter { it.optString("date") == LocalDate.now().toString() }.sumOf { it.optInt("minutes") }
+                val totalMinutes = logs.sumOf { it.optInt("minutes") }
+                Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) { Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(12.dp).background(runCatching { Color(android.graphics.Color.parseColor(subject.optString("color", "#B5A9FF"))) }.getOrDefault(Purple), CircleShape))
+                    Column(Modifier.weight(1f).padding(start = 12.dp)) { Text(subject.optString("name"), fontWeight = FontWeight.SemiBold); Text("Today ${formatStudyTime(todayMinutes)} · Total ${formatStudyTime(totalMinutes)}", color = Muted, fontSize = 11.sp); if (subject.optString("teacher").isNotBlank()) Text(subject.optString("teacher"), color = Muted, fontSize = 10.sp) }
+                    TextButton(onClick = { subjectToEdit = subject.optString("id"); subjectName = subject.optString("name"); subjectTeacher = subject.optString("teacher"); subjectColor = subject.optString("color", "#8B7CF6"); subjectDialog = true }) { Text("Edit") }
+                } }
+            }
         }
-        if (subjects.length() == 0) item { EmptyCard("Add a subject to track study time by class.") }
-        if (subjects.length() == 0) item { EmptyCard("Add your first subject here. It will sync to your AURA account.") }
-        items((0 until subjects.length()).mapNotNull { subjects.optJSONObject(it) }) { subject ->
-            Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) { Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(12.dp).background(runCatching { Color(android.graphics.Color.parseColor(subject.optString("color", "#B5A9FF"))) }.getOrDefault(Purple), CircleShape))
-                Column(Modifier.weight(1f).padding(start = 12.dp)) { Text(subject.optString("name"), fontWeight = FontWeight.SemiBold); if (subject.optString("teacher").isNotBlank()) Text(subject.optString("teacher"), color = Muted, fontSize = 11.sp) }
-                TextButton(onClick = { subjectToEdit = subject.optString("id"); subjectName = subject.optString("name"); subjectTeacher = subject.optString("teacher"); subjectColor = subject.optString("color", "#8B7CF6"); subjectDialog = true }) { Text("Edit") }
-            } }
-        }
-        item { SectionTitle("Your schedule", "Set the time, days and reminder for each task") }
-        if (schedule.length() == 0) item { EmptyCard("Add a recurring class, study block, or personal activity.") }
-        items((0 until schedule.length()).mapNotNull { schedule.optJSONObject(it) }) { entry ->
-            Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) { Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) { Text(entry.optString("title"), fontWeight = FontWeight.SemiBold); Text("${entry.optString("start")}–${entry.optString("end")} · ${entry.optString("kind")} · ${entry.optString("date").ifBlank { entry.optJSONArray("days")?.weekdayLabels() ?: "" }}${if (entry.optBoolean("reminderEnabled")) " · Reminder on" else ""}", color = Muted, fontSize = 10.sp) }
-                TextButton(onClick = { routineToEdit = entry.optString("id"); routineTitle = entry.optString("title"); routineStart = entry.optString("start"); routineEnd = entry.optString("end"); routineDate = entry.optString("date"); routineDays = entry.optJSONArray("days")?.joinInts().orEmpty(); routineKind = entry.optString("kind", "Study"); routineSubject = entry.optString("subjectId"); routineReminder = entry.optBoolean("reminderEnabled"); routineReminderInterval = entry.optInt("reminderIntervalMinutes", 60); routineDialog = true }) { Text("Edit") }
-                TextButton(onClick = { val updated = JSONArray(); for (i in 0 until schedule.length()) if (schedule.optJSONObject(i)?.optString("id") != entry.optString("id")) updated.put(schedule.optJSONObject(i)); saveSchedule(updated) }) { Text("Delete", color = Color(0xFFFF8D8D)) }
-            } }
+        if (mode == "Classes") {
+            item { Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { SectionTitle("Class timetable", "Recurring classes with optional reminders") }; TextButton(onClick = { routineToEdit = null; routineTitle = ""; routineStart = "09:00"; routineEnd = "10:00"; routineDate = ""; routineDays = (LocalDate.now().dayOfWeek.value % 7).toString(); routineReminder = false; routineReminderInterval = 0; routineDialog = true }) { Text("+ Add class") } } }
+            if (schedule.length() == 0) item { EmptyCard("Add your first class to see it on your timetable.") }
+            items((0 until schedule.length()).mapNotNull { schedule.optJSONObject(it) }.filter { it.optString("kind", "Class") == "Class" }) { entry ->
+                Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) { Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) { Text(entry.optString("title"), fontWeight = FontWeight.SemiBold); Text("${entry.optString("start")}–${entry.optString("end")} · ${entry.optString("date").ifBlank { entry.optJSONArray("days")?.weekdayLabels() ?: "" }}${if (entry.optBoolean("reminderEnabled")) " · Reminder on" else ""}", color = Muted, fontSize = 10.sp) }
+                    TextButton(onClick = { routineToEdit = entry.optString("id"); routineTitle = entry.optString("title"); routineStart = entry.optString("start"); routineEnd = entry.optString("end"); routineDate = entry.optString("date"); routineDays = entry.optJSONArray("days")?.joinInts().orEmpty(); routineReminder = entry.optBoolean("reminderEnabled"); routineReminderInterval = entry.optInt("reminderIntervalMinutes", 0); routineDialog = true }) { Text("Edit") }
+                    TextButton(onClick = { val updated = JSONArray(); for (i in 0 until schedule.length()) if (schedule.optJSONObject(i)?.optString("id") != entry.optString("id")) updated.put(schedule.optJSONObject(i)); saveSchedule(updated) }) { Text("Delete", color = Color(0xFFFF8D8D)) }
+                } }
+            }
         }
     }
 
@@ -593,7 +600,7 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
         val minutes = studyLogMinutes.toIntOrNull()
         if (minutes != null && minutes in 1..1440 && studyLogSubject.isNotBlank()) {
             val updated = JSONArray(); for (i in 0 until studyLogs.length()) studyLogs.optJSONObject(i)?.let(updated::put)
-            updated.put(JSONObject().put("id", "study_${java.util.UUID.randomUUID()}").put("subjectId", studyLogSubject).put("date", LocalDate.now().toString()).put("minutes", minutes).put("topic", studyLogTopic.trim()))
+            updated.put(JSONObject().put("id", "study_${java.util.UUID.randomUUID()}").put("subjectId", studyLogSubject).put("date", LocalDate.now().toString()).put("minutes", minutes).put("topic", studyLogTopic.trim()).put("source", "manual"))
             save(JSONObject(planner.toString()).put("studyLogs", updated)); logStudyDialog = false
         }
     }, enabled = studyLogMinutes.toIntOrNull() in 1..1440 && studyLogSubject.isNotBlank()) { Text("Save") } }, dismissButton = { TextButton(onClick = { logStudyDialog = false }) { Text("Cancel") } })
@@ -615,12 +622,7 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
 
     if (routineDialog) AlertDialog(onDismissRequest = { routineDialog = false }, title = { Text(if (routineToEdit == null) "Schedule a task" else "Edit scheduled task") }, text = {
         Column {
-            AuraField("Activity name", routineTitle, { routineTitle = it })
-            ExposedDropdownMenuBox(subjectMenu, { subjectMenu = it }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
-                val subjectLabel = (0 until subjects.length()).mapNotNull { subjects.optJSONObject(it) }.firstOrNull { it.optString("id") == routineSubject }?.optString("name") ?: "General / no subject"
-                OutlinedTextField(value = subjectLabel, onValueChange = {}, readOnly = true, label = { Text("Subject") }, modifier = Modifier.menuAnchor().fillMaxWidth(), trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(subjectMenu) })
-                ExposedDropdownMenu(subjectMenu, { subjectMenu = false }) { DropdownMenuItem(text = { Text("General / no subject") }, onClick = { routineSubject = ""; subjectMenu = false }); (0 until subjects.length()).mapNotNull { subjects.optJSONObject(it) }.forEach { item -> DropdownMenuItem(text = { Text(item.optString("name")) }, onClick = { routineSubject = item.optString("id"); subjectMenu = false }) } }
-            }
+            AuraField("Class name", routineTitle, { routineTitle = it })
             AuraField("Start · HH:mm", routineStart, { routineStart = it }, keyboard = KeyboardType.Ascii)
             AuraField("End · HH:mm", routineEnd, { routineEnd = it }, keyboard = KeyboardType.Ascii)
             AuraField("One-time date · YYYY-MM-DD (optional)", routineDate, { routineDate = it }, keyboard = KeyboardType.Ascii)
@@ -635,7 +637,6 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
                     }, label = { Text(label, fontSize = 10.sp) })
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.padding(top = 6.dp)) { listOf("Class", "Study", "Personal").forEach { kind -> FilterChip(selected = routineKind == kind, onClick = { routineKind = kind }, label = { Text(kind, fontSize = 10.sp) }) } }
             Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                 Column(Modifier.weight(1f)) { Text("Notifications", fontWeight = FontWeight.Medium); Text("For this scheduled activity", color = Muted, fontSize = 11.sp) }
                 Switch(checked = routineReminder, onCheckedChange = { routineReminder = it })
@@ -659,29 +660,10 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
         val validDate = routineDate.isBlank() || (routineDate.matches(Regex("\\d{4}-\\d{2}-\\d{2}") ) && runCatching { LocalDate.parse(routineDate) }.isSuccess)
         if ((routineDate.isNotBlank() || days.isNotEmpty()) && validDate && routineStart.matches(Regex("([01]\\d|2[0-3]):[0-5]\\d")) && routineEnd.matches(Regex("([01]\\d|2[0-3]):[0-5]\\d"))) {
             val updated = JSONArray(); for (i in 0 until schedule.length()) { val old = schedule.optJSONObject(i) ?: continue; if (old.optString("id") != id) updated.put(old) }
-            updated.put(JSONObject().put("id", id).put("title", routineTitle.trim()).put("subjectId", routineSubject).put("days", JSONArray(days)).put("date", routineDate.trim()).put("overrideWeekday", routineDate.isNotBlank()).put("start", routineStart).put("end", routineEnd).put("kind", routineKind).put("reminderEnabled", routineReminder).put("reminderIntervalMinutes", routineReminderInterval))
+            updated.put(JSONObject().put("id", id).put("title", routineTitle.trim()).put("subjectId", "").put("days", JSONArray(days)).put("date", routineDate.trim()).put("overrideWeekday", routineDate.isNotBlank()).put("start", routineStart).put("end", routineEnd).put("kind", "Class").put("reminderEnabled", routineReminder).put("reminderIntervalMinutes", routineReminderInterval))
             saveSchedule(updated); routineDialog = false
         }
-    }, enabled = routineTitle.trim().isNotEmpty() && (routineDate.isNotBlank() || routineDays.split(",").any { it.trim().toIntOrNull()?.let { day -> day in 0..6 } == true })) { Text("Save scheduled task") } }, dismissButton = { TextButton(onClick = { routineDialog = false }) { Text("Cancel") } })
-}
-
-@Composable private fun LifePage(steps: String, setSteps: (String) -> Unit, screen: String, setScreen: (String) -> Unit, calories: String, setCalories: (String) -> Unit, busy: Boolean, deviceScreenMinutes: Int?, stepsConnected: Boolean, usageAccess: Boolean, syncStatus: String, connectSteps: () -> Unit, usageSettings: () -> Unit, refreshDeviceData: () -> Unit, save: () -> Unit) {
-    Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        SectionTitle("Daily check-in", "${LocalDate.now()}")
-        Text("Your device readings and entries stay synced to your AURA account.", color = Muted, fontSize = 12.sp)
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = connectSteps, modifier = Modifier.weight(1f)) { Text(if (stepsConnected) "Refresh steps" else "Connect steps", fontSize = 11.sp) }
-            OutlinedButton(onClick = usageSettings, modifier = Modifier.weight(1f)) { Text(if (usageAccess) "Refresh screen time" else "Allow screen time", fontSize = 11.sp) }
-        }
-        OutlinedButton(onClick = refreshDeviceData, modifier = Modifier.fillMaxWidth()) { Text("Refresh device data") }
-        if (deviceScreenMinutes != null) Text("Today’s device use: ${deviceScreenMinutes / 60}h ${deviceScreenMinutes % 60}m", color = Color(0xFF83D6C4), fontSize = 11.sp)
-        if (syncStatus.isNotBlank()) Text(syncStatus, color = Muted, fontSize = 11.sp)
-        AuraField("Steps", steps, setSteps, KeyboardType.Number)
-        AuraField("Screen time · minutes", screen, setScreen, KeyboardType.Number)
-        AuraField("Calories · kcal", calories, setCalories, KeyboardType.Number)
-        Button(onClick = save, enabled = !busy, modifier = Modifier.fillMaxWidth().padding(top = 6.dp)) { Text(if (busy) "Saving…" else "Save today's log") }
-        Card(colors = CardDefaults.cardColors(containerColor = Surface)) { Text("Steps come from records written to Health Connect. Screen time comes from Android Usage Access. Enable the matching permission, then tap Refresh device data. Calories can be entered manually.", Modifier.padding(16.dp), color = Muted, fontSize = 12.sp) }
-    }
+    }, enabled = routineTitle.trim().isNotEmpty() && (routineDate.isNotBlank() || routineDays.split(",").any { it.trim().toIntOrNull()?.let { day -> day in 0..6 } == true })) { Text("Save class") } }, dismissButton = { TextButton(onClick = { routineDialog = false }) { Text("Cancel") } })
 }
 
 @Composable private fun LeaderboardPage(entries: JSONArray) {
@@ -712,8 +694,7 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
                 }
             }
         }
-        item { InfoCard("How points work", "Scores display to two decimal places. Missions earn half their library value and taper by 3% at chapter milestones. Classes earn 0.10 AP. Focus earns 0.01 AP every two focused minutes. Streaks advance whenever you earn points.") }
-        item { InfoCard("Daily combos", "4h study + 30m movement earns 12.00 AP. 6h + 1h earns 50.00 AP. The 10h + 1h All-day balance combo earns 112.61 AP—more than all 1,070 mission values combined.") }
+        item { InfoCard("How points work", "Aura Points display to two decimal places. Only completed Focus timer sessions earn points: 0.01 AP for every two focused minutes. Manually logged study hours, classes and scheduled tasks do not earn points. Your streak advances when a Focus session earns points.") }
         item { InfoCard("Connect with Aryan", "Connect with Aryan across work, projects, and social.") {
             val context = androidx.compose.ui.platform.LocalContext.current
             LinkRow("LinkedIn", "linkedin.com/in/aryan-tiwari-884906281", "https://linkedin.com/in/aryan-tiwari-884906281/", context)
@@ -722,7 +703,7 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
             LinkRow("Personal Instagram", "@aryant1wari", "https://www.instagram.com/aryant1wari/", context)
             LinkRow("Email", "aryantiwari90605@gmail.com", "mailto:aryantiwari90605@gmail.com", context)
         } }
-        item { InfoCard("Device features", "Add the AURA points and day-streak widget from your Android home screen: long-press the home screen, choose Widgets, then select AURA. The focus timer continues with the screen off. ChatGPT, Gemini, YouTube, and other non-social apps are allowed during focus; opening social media or the home screen ends the timer. Usage Access enables this app-switch check and screen-time sync. Steps sync through Health Connect, and calories can be logged in Life.") }
+        item { InfoCard("Device features", "Add the AURA points and day-streak widget from your Android home screen: long-press the home screen, choose Widgets, then select AURA. The focus timer continues with the screen off. ChatGPT, Gemini, YouTube, and other non-social apps are allowed during focus; opening social media or the home screen ends the timer. Scheduled task alarms and notifications are set in the Tasks tab. Android may ask for notification permission; exact Notification reminders may also require Alarms & reminders access. Alarms use Android’s alarm service and can ring while AURA is closed.") }
         item { InfoCard("Account", "Your sign-in stays saved on this device. Use Sign out only when you want to remove this account from the app.") {
             Button(onClick = onSignOut, modifier = Modifier.fillMaxWidth().padding(top = 12.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF392832))) { Text("Sign out of AURA") }
         } }
@@ -741,15 +722,3 @@ private fun JSONArray.joinInts(): String = (0 until length()).mapNotNull { optIn
 private fun JSONArray.weekdayLabels(): String = (0 until length()).mapNotNull { optInt(it).takeIf { value -> value in 0..6 }?.let { listOf("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")[it] } }.joinToString(", ")
 private fun formatStudyTime(minutes: Int): String = if (minutes < 60) "${minutes}m" else "${minutes / 60}h ${minutes % 60}m"
 private fun formatAuraPoints(points: Int): String = String.format(java.util.Locale.US, "%.2f", points / 100.0)
-
-private fun saveLifeEntry(context: android.content.Context, planner: JSONObject, steps: String, screenTime: String, calories: String, accountId: String): JSONObject {
-    val data = JSONObject(planner.toString())
-    val list = data.optJSONArray("lifestyle") ?: JSONArray()
-    val date = LocalDate.now().toString()
-    val updated = JSONArray()
-    for (i in 0 until list.length()) if (list.optJSONObject(i)?.optString("date") != date) updated.put(list.optJSONObject(i))
-    updated.put(JSONObject().put("date", date).put("steps", steps.toIntOrNull() ?: 0).put("screenTime", screenTime.toIntOrNull() ?: 0).put("calories", calories.toIntOrNull() ?: 0))
-    data.put("lifestyle", updated)
-    AuraApi.savePlannerDraft(context, data, accountId)
-    return data
-}
