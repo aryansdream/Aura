@@ -92,7 +92,7 @@ object LanFocusSync {
         val prefs = app.getSharedPreferences("aura_native", Context.MODE_PRIVATE)
         val seen = HashSet(prefs.getStringSet("lan_seen_point_events", emptySet()).orEmpty())
         if (!seen.add(eventId)) return
-        prefs.edit().putStringSet("lan_seen_point_events", seen.takeLast(4000).toSet()).apply()
+        prefs.edit().putStringSet("lan_seen_point_events", seen.toList().takeLast(4000).toSet()).apply()
         executor.execute {
             runCatching {
                 if (!isWifiConnected(app)) return@runCatching
@@ -273,7 +273,7 @@ object LanFocusSync {
                             val updatedDays = (0 until days.length()).map { days.optString(it) }.plus(day).distinct().sortedDescending()
                             cached.put("days", org.json.JSONArray(updatedDays))
                         }
-                        prefs.edit().putStringSet("lan_seen_point_events", seen.takeLast(4000).toSet())
+                        prefs.edit().putStringSet("lan_seen_point_events", seen.toList().takeLast(4000).toSet())
                             .putString("account_cache", cached.toString()).apply()
                         AuraWidgetProvider.sync(context, cached)
                         continue
@@ -340,9 +340,23 @@ object LanFocusSync {
         val manager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         // Look for a connected Wi-Fi transport directly. A hotspot with no WAN has no
         // validated internet route, and may not be ConnectivityManager.activeNetwork.
-        return manager.allNetworks.any { network ->
+        if (manager.allNetworks.any { network ->
             manager.getNetworkCapabilities(network)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
-        }
+        }) return true
+
+        // Some Android builds expose the phone's own hotspot as a local AP interface,
+        // not as a TRANSPORT_WIFI network. Still allow same-hotspot LAN sync without WAN.
+        return runCatching {
+            NetworkInterface.getNetworkInterfaces()?.toList().orEmpty().any { networkInterface ->
+                networkInterface.isUp &&
+                    networkInterface.name.lowercase().let { name ->
+                        name.startsWith("wlan") || name.startsWith("ap") ||
+                            name.startsWith("swlan") || name.startsWith("softap")
+                    } && networkInterface.interfaceAddresses.any { address ->
+                        (address.address as? java.net.Inet4Address)?.let { !it.isLoopbackAddress } == true && address.broadcast != null
+                    }
+            }
+        }.getOrDefault(false)
     }
 
     private fun broadcastAddress(context: Context): InetAddress {
@@ -359,7 +373,9 @@ object LanFocusSync {
         // interface broadcast address so a phone hotspot still works without WAN data.
         val interfaceBroadcast = runCatching {
             NetworkInterface.getNetworkInterfaces().toList().asSequence()
-                .filter { it.isUp && (it.name.startsWith("wlan") || it.name.startsWith("ap")) }
+                .filter { it.isUp && it.name.lowercase().let { name ->
+                    name.startsWith("wlan") || name.startsWith("ap") || name.startsWith("swlan") || name.startsWith("softap")
+                } }
                 .flatMap { it.interfaceAddresses.asSequence() }
                 .mapNotNull { it.broadcast }
                 .firstOrNull()
