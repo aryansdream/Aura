@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="aura-loop" x1="50" y1="0" x2="462" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7364D8"/>
+      <stop offset=".48" stop-color="#A99EF0"/>
+      <stop offset="1" stop-color="#58AA9E"/>
+    </linearGradient>
+  </defs>
+  <path d="M54 256 C54 104 170 104 256 256 C342 408 458 408 458 256 C458 104 342 104 256 256 C170 408 54 408 54 256"
+        fill="none" stroke="url(#aura-loop)" stroke-width="17" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="256" y="278" text-anchor="middle" font-family="Manrope, Avenir Next, sans-serif" font-size="64" font-weight="900" letter-spacing="2" fill="#05050A" stroke="#FFFFFF" stroke-width="3.5" paint-order="stroke fill">AURA</text>
+</svg>

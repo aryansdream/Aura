@@ -21,6 +21,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.NotificationManagerCompat
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -55,6 +56,15 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.draw.clip
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.LocalIndication
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalView
+import android.view.HapticFeedbackConstants
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -66,10 +76,10 @@ import java.time.DayOfWeek
 import java.time.format.DateTimeFormatter
 import java.time.LocalDateTime
 
-private val Night = Color(0xFF11131A)
-private val Surface = Color(0xFF1B1E28)
-private val Purple = Color(0xFFB5A9FF)
-private val Muted = Color(0xFFA3A6B5)
+private val Night: Color @Composable get() = MaterialTheme.colorScheme.background
+private val Surface: Color @Composable get() = MaterialTheme.colorScheme.surface
+private val Purple: Color @Composable get() = MaterialTheme.colorScheme.primary
+private val Muted: Color @Composable get() = MaterialTheme.colorScheme.onSurfaceVariant
 
 class MainActivity : ComponentActivity() {
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
@@ -124,8 +134,33 @@ class MainActivity : ComponentActivity() {
         AppUpdateScheduler.schedule(this)
         Thread { runCatching { AppUpdater.checkAndNotify(applicationContext) } }.start()
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme(primary = Purple, background = Night, surface = Surface, onBackground = Color(0xFFF4F2FC), onSurface = Color(0xFFF4F2FC), secondary = Color(0xFF83D6C4))) {
+            val prefs = remember { getSharedPreferences("aura_native", MODE_PRIVATE) }
+            var darkMode by remember { mutableStateOf(prefs.getBoolean("appearance_dark", true)) }
+            val palette = if (darkMode) darkColorScheme(
+                primary = Color(0xFFC4B8FF), onPrimary = Color(0xFF21194A),
+                primaryContainer = Color(0xFF302957), onPrimaryContainer = Color(0xFFE6DFFF),
+                background = Color(0xFF101218), onBackground = Color(0xFFF5F3FA),
+                surface = Color(0xFF191C24), onSurface = Color(0xFFF5F3FA),
+                surfaceVariant = Color(0xFF242832), onSurfaceVariant = Color(0xFFB8BBC7),
+                outline = Color(0xFF777986), outlineVariant = Color(0xFF383B46),
+                secondary = Color(0xFF8BD8C6), onSecondary = Color(0xFF103A32)
+            ) else lightColorScheme(
+                primary = Color(0xFF5546B8), onPrimary = Color.White,
+                primaryContainer = Color(0xFFE9E4FF), onPrimaryContainer = Color(0xFF20184D),
+                background = Color(0xFFF4F3F8), onBackground = Color(0xFF1D1C24),
+                surface = Color(0xFFFFFFFF), onSurface = Color(0xFF1D1C24),
+                surfaceVariant = Color(0xFFECEBF2), onSurfaceVariant = Color(0xFF5E5D6A),
+                outline = Color(0xFF777582), outlineVariant = Color(0xFFD8D6E0),
+                secondary = Color(0xFF216F63), onSecondary = Color.White
+            )
+            MaterialTheme(colorScheme = palette, shapes = Shapes(
+                extraSmall = RoundedCornerShape(10.dp), small = RoundedCornerShape(14.dp),
+                medium = RoundedCornerShape(20.dp), large = RoundedCornerShape(26.dp),
+                extraLarge = RoundedCornerShape(30.dp)
+            )) {
                 AuraApp(
+                    isDarkMode = darkMode,
+                    onThemeChange = { darkMode = it; prefs.edit().putBoolean("appearance_dark", it).apply() },
                     onStartFocus = { subjectId, subject, minutes ->
                         val intent = Intent(this, FocusService::class.java).putExtra("subjectId", subjectId).putExtra("subject", subject).putExtra("duration", minutes * 60_000L).putExtra("session", java.util.UUID.randomUUID().toString())
                         if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
@@ -139,7 +174,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: () -> Unit) {
+private fun AuraApp(isDarkMode: Boolean, onThemeChange: (Boolean) -> Unit, onStartFocus: (String, String, Int) -> Unit, onStopFocus: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
     val localPrefs = remember { context.getSharedPreferences("aura_native", 0) }
@@ -159,7 +194,10 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
     var focusMinutes by remember { mutableIntStateOf(25) }
     var focusNow by remember { mutableLongStateOf(0L) }
     var syncMessage by remember { mutableStateOf("") }
+    val motionEnabled = Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) > 0f
     val focusFullScreen = page == "Focus" && localPrefs.getBoolean("focus_running", false)
+    val detailPage = page in setOf("Table", "Info", "Share", "Blocklist")
+    BackHandler(enabled = detailPage && !focusFullScreen) { page = "More" }
     BackHandler(enabled = focusFullScreen) {
         onStopFocus()
         page = "Today"
@@ -265,17 +303,22 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
     Scaffold(containerColor = if (focusFullScreen) Color.Black else Night, bottomBar = {
         if (!focusFullScreen) NavigationBar(containerColor = Surface, contentColor = Muted) {
                 listOf("Today" to Icons.Default.Home, "Focus" to Icons.Default.Timer, "Subjects" to Icons.Default.MenuBook, "Classes" to Icons.Default.CalendarMonth, "Tasks" to Icons.Default.Alarm, "More" to Icons.Default.MoreVert).forEach { (label, icon) ->
-                NavigationBarItem(selected = page == label || (label == "More" && page in setOf("Table", "Info", "Share")), onClick = { page = label; if (label == "More") { } }, icon = { Icon(icon, contentDescription = label) }, label = { Text(label, fontSize = 10.sp) })
+                NavigationBarItem(selected = page == label || (label == "More" && page in setOf("Table", "Info", "Share", "Blocklist")), onClick = { page = label }, icon = { Icon(icon, contentDescription = label) }, label = { Text(label, fontSize = 10.sp) })
             }
         }
     }) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).background(if (focusFullScreen) Color.Black else Night)) {
-            if (!focusFullScreen) Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Row(verticalAlignment = Alignment.CenterVertically) { Box(Modifier.size(42.dp), contentAlignment = Alignment.Center) { Text("∞", color = Purple, fontSize = 39.sp, fontWeight = FontWeight.Bold); Text("AURA", color = Color.White, fontSize = 7.sp, fontWeight = FontWeight.Black, letterSpacing = .5.sp) }; Column(Modifier.padding(start = 6.dp)) { Text("AURA", color = Purple, fontWeight = FontWeight.Black, letterSpacing = 2.sp, fontSize = 15.sp); Text("Aura-Coz you need it!", color = Muted, fontSize = 10.sp) } }
+        Column(Modifier.fillMaxSize().padding(padding).background(if (focusFullScreen) Color.Black else Night).then(if (motionEnabled) Modifier.animateContentSize() else Modifier)) {
+            if (!focusFullScreen) Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).heightIn(min = 56.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                if (detailPage) {
+                    TextButton(onClick = { page = "More" }, modifier = Modifier.heightIn(min = 48.dp)) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back to More")
+                        Spacer(Modifier.width(6.dp)); Text("More")
+                    }
+                } else Row(verticalAlignment = Alignment.CenterVertically) { AuraBrandMark(Modifier.size(width = 62.dp, height = 46.dp)); Column(Modifier.padding(start = 8.dp)) { Text("AURA", color = Purple, fontWeight = FontWeight.Black, letterSpacing = 2.sp, fontSize = 15.sp); Text("Aura-Coz you need it!", color = Muted, fontSize = 10.sp) } }
                 IconButton(onClick = { load() }) { Icon(Icons.Default.Refresh, "Refresh", tint = Muted) }
             }
             if (!focusFullScreen && error.isNotBlank()) Text(error, Modifier.padding(horizontal = 20.dp), color = Color(0xFFFF8D8D), fontSize = 12.sp)
-            if (!focusFullScreen && syncMessage.isNotBlank() && error.isBlank()) Text(syncMessage, Modifier.padding(horizontal = 20.dp), color = Color(0xFF83D6C4), fontSize = 11.sp)
+            if (!focusFullScreen && syncMessage.isNotBlank() && error.isBlank()) Text(syncMessage, Modifier.padding(horizontal = 20.dp), color = MaterialTheme.colorScheme.secondary, fontSize = 11.sp)
             when (page) {
                 "Today" -> HomePage(account, planner, onOpenStudy = { page = "Classes" }, saveAttendance = { next -> saveNativePlanner(next, "Attendance saved and synced.") })
                 "Focus" -> FocusPage(planner.optJSONArray("subjects") ?: JSONArray(), subjectChoice, { subjectChoice = it }, focusMinutes, { focusMinutes = it }, context.getSharedPreferences("aura_native", 0).getLong("focus_deadline", 0), focusNow, onStartFocus, onStopFocus)
@@ -295,16 +338,20 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                     }
                 }
                 "More" -> MorePage(
+                    isDarkMode = isDarkMode,
+                    onThemeChange = onThemeChange,
                     onTable = {
                         page = "Table"
                         scope.launch { leaderboard = withContext(Dispatchers.IO) { AuraApi.request(context, "/api/leaderboard").optJSONArray("entries") ?: JSONArray() } }
                     },
                     onInfo = { page = "Info" },
-                    onShare = { page = "Share" }
+                    onShare = { page = "Share" },
+                    onBlocklist = { page = "Blocklist" }
                 )
                 "Share" -> SharePage(context)
+                "Blocklist" -> BlocklistPage(context)
                 "Table" -> LeaderboardPage(leaderboard)
-                "Info" -> InfoPage(onSignOut = {
+                "Info" -> InfoPage(isDarkMode = isDarkMode, onSignOut = {
                     scope.launch {
                         busy = true
                         withContext(Dispatchers.IO) { AuraApi.signOut(context) }
@@ -373,10 +420,10 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                 (0..6).forEach { offset ->
                     val day = weekStart.plusDays(offset.toLong())
                     val isSelected = day == selectedDate
-                    Card(onClick = { selectedDate = day }, colors = CardDefaults.cardColors(containerColor = if (isSelected) Color(0xFF3A3554) else Night), shape = RoundedCornerShape(12.dp)) {
-                        Column(Modifier.width(43.dp).padding(vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Card(modifier = Modifier.pressScaleClickable { selectedDate = day }, colors = CardDefaults.cardColors(containerColor = if (isSelected) Purple.copy(alpha = .18f) else Night), shape = RoundedCornerShape(12.dp)) {
+                        Column(Modifier.width(48.dp).heightIn(min = 48.dp).padding(vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(3.dp)) {
                             Text(day.dayOfWeek.name.take(3), color = if (isSelected) Purple else Muted, fontSize = 8.sp, fontWeight = FontWeight.Bold)
-                            Text(day.dayOfMonth.toString(), color = if (isSelected) Color.White else Color(0xFFF4F2FC), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                            Text(day.dayOfMonth.toString(), color = MaterialTheme.colorScheme.onSurface, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                         }
                     }
                 }
@@ -391,12 +438,12 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                     Column(Modifier.fillMaxWidth().background(Night, RoundedCornerShape(12.dp)).padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             Column(Modifier.width(42.dp), horizontalAlignment = Alignment.End) {
-                                Text(entry.optString("start"), color = Color(0xFFF4F2FC), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                Text(entry.optString("start"), color = MaterialTheme.colorScheme.onSurface, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                                 Text(entry.optString("end"), color = Muted, fontSize = 9.sp)
                             }
                             Box(Modifier.width(3.dp).height(38.dp).background(accent, RoundedCornerShape(2.dp)))
                             Column(Modifier.weight(1f)) {
-                                Text(entry.optString("title"), color = Color(0xFFF4F2FC), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                Text(entry.optString("title"), color = MaterialTheme.colorScheme.onSurface, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                                 Text(listOfNotNull(entry.optString("kind").takeIf { it.isNotBlank() }, subject?.optString("name")?.takeIf { it.isNotBlank() }).joinToString(" · "), color = Muted, fontSize = 9.sp)
                             }
                         }
@@ -422,11 +469,12 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
     }
 }
 
-@Composable private fun Metric(label: String, value: String) { Column { Text(label, color = Muted, fontSize = 8.sp, letterSpacing = 1.sp); Text(value, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color(0xFF83D6C4)) } }
+@Composable private fun Metric(label: String, value: String) { Column { Text(label, color = Muted, fontSize = 8.sp, letterSpacing = 1.sp); Text(value, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary) } }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable private fun FocusPage(subjects: JSONArray, selected: String, select: (String) -> Unit, minutes: Int, setMinutes: (Int) -> Unit, deadline: Long, focusNow: Long, start: (String, String, Int) -> Unit, stop: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val hapticView = LocalView.current
     val prefs = remember { context.getSharedPreferences("aura_native", 0) }
     val isRunning = prefs.getBoolean("focus_running", false)
     var waterInterval by remember { mutableIntStateOf(prefs.getInt("water_interval_minutes", 30).coerceIn(5, 90)) }
@@ -480,12 +528,17 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                 Column(Modifier.fillMaxWidth().padding(15.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Focus preferences", fontWeight = FontWeight.Bold)
                     Text("Water reminder · every $waterInterval min", color = Purple, fontSize = 12.sp)
-                    Slider(value = waterInterval.toFloat(), onValueChange = { waterInterval = ((it.toInt() - 5) / 5 * 5 + 5).coerceIn(5, 90); prefs.edit().putInt("water_interval_minutes", waterInterval).apply() }, valueRange = 5f..90f, steps = 16)
+                    Slider(value = waterInterval.toFloat(), onValueChange = {
+                        val snapped = ((it.toInt() - 5) / 5 * 5 + 5).coerceIn(5, 90)
+                        if (snapped != waterInterval) hapticView.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                        waterInterval = snapped
+                        prefs.edit().putInt("water_interval_minutes", waterInterval).apply()
+                    }, valueRange = 5f..90f, steps = 16)
                     Text("AURA shows an animated water break while open and a reminder notification when you’re away.", color = Muted, fontSize = 11.sp, lineHeight = 15.sp)
                     HorizontalDivider(color = Muted.copy(alpha = .2f))
                     Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("Block social apps", fontWeight = FontWeight.Medium); Text("Only while a focus session is active", color = Muted, fontSize = 10.sp) }; Switch(checked = blockApps, onCheckedChange = { blockApps = it; prefs.edit().putBoolean("block_social_apps", it).apply() }) }
                     if (blockApps) {
-                        Text("Covers Instagram, TikTok, Facebook, Messenger, WhatsApp, Snapchat, X, Threads, Reddit and Pinterest. ChatGPT, Gemini and YouTube remain available. AURA checks only the foreground app name through Android Accessibility while focus is active.", color = Muted, fontSize = 10.sp, lineHeight = 14.sp)
+                        Text("Blocks apps selected in More → App blocklist. ChatGPT, Gemini and YouTube stay available unless you add them. AURA checks the foreground app package only while Focus is active.", color = Muted, fontSize = 10.sp, lineHeight = 14.sp)
                         if (!accessibilityEnabled) TextButton(onClick = { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) { Text("Enable AURA in Accessibility settings") }
                     }
                     HorizontalDivider(color = Muted.copy(alpha = .2f))
@@ -554,12 +607,125 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
     }
 }
 
-@Composable private fun MorePage(onTable: () -> Unit, onInfo: () -> Unit, onShare: () -> Unit) {
-    Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        SectionTitle("More", "Community and AURA")
-        Card(onClick = onShare, colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(16.dp)) { Row(Modifier.fillMaxWidth().padding(20.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Share, null, tint = Purple); Column(Modifier.weight(1f).padding(start = 14.dp)) { Text("Aura Ecosystem", fontWeight = FontWeight.Bold); Text("Local Wi-Fi clipboard and file sharing", color = Muted, fontSize = 12.sp) }; Icon(Icons.Default.ChevronRight, null, tint = Muted) } }
-        Card(onClick = onTable, colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(16.dp)) { Row(Modifier.fillMaxWidth().padding(20.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Leaderboard, null, tint = Purple); Column(Modifier.weight(1f).padding(start = 14.dp)) { Text("Common table", fontWeight = FontWeight.Bold); Text("See the community leaderboard", color = Muted, fontSize = 12.sp) }; Icon(Icons.Default.ChevronRight, null, tint = Muted) } }
-        Card(onClick = onInfo, colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(16.dp)) { Row(Modifier.fillMaxWidth().padding(20.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Info, null, tint = Purple); Column(Modifier.weight(1f).padding(start = 14.dp)) { Text("About AURA", fontWeight = FontWeight.Bold); Text("Point rules, app details and connect", color = Muted, fontSize = 12.sp) }; Icon(Icons.Default.ChevronRight, null, tint = Muted) } }
+@Composable private fun AuraBrandMark(modifier: Modifier = Modifier) {
+    Box(modifier, contentAlignment = Alignment.Center) {
+        Canvas(Modifier.fillMaxSize().padding(horizontal = 2.dp, vertical = 4.dp)) {
+            val w = size.width; val h = size.height
+            val p = Path().apply {
+                moveTo(w * .08f, h * .5f)
+                cubicTo(w * .22f, h * .08f, w * .38f, h * .08f, w * .5f, h * .5f)
+                cubicTo(w * .62f, h * .92f, w * .78f, h * .92f, w * .92f, h * .5f)
+                cubicTo(w * .78f, h * .08f, w * .62f, h * .08f, w * .5f, h * .5f)
+                cubicTo(w * .38f, h * .92f, w * .22f, h * .92f, w * .08f, h * .5f)
+            }
+            drawPath(p, Brush.linearGradient(listOf(Color(0xFF7565D6), Color(0xFFAAA0E9), Color(0xFF5B9F96))), style = Stroke(width = h * .13f, cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round))
+        }
+        Text("AURA", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Black,
+            letterSpacing = 1.3.sp, style = androidx.compose.ui.text.TextStyle(drawStyle = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.8f)))
+        Text("AURA", color = Color(0xCC05050A), fontSize = 14.sp, fontWeight = FontWeight.Black, letterSpacing = 1.3.sp)
+    }
+}
+
+@Composable private fun MorePage(isDarkMode: Boolean, onThemeChange: (Boolean) -> Unit, onTable: () -> Unit, onInfo: () -> Unit, onShare: () -> Unit, onBlocklist: () -> Unit) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        SectionTitle("More", "Your AURA, your way")
+        Card(modifier = Modifier.pressScaleClickable(onShare), colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(24.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Purple.copy(alpha = .18f))) {
+            Box(Modifier.fillMaxWidth().background(Brush.linearGradient(listOf(Purple.copy(alpha = .18f), Color(0xFF5AC3B4).copy(alpha = .08f), Surface)))) {
+                Text("∞", color = Purple.copy(alpha = .09f), fontSize = 128.sp, lineHeight = 128.sp, modifier = Modifier.align(Alignment.CenterEnd).offset(x = 22.dp))
+                Row(Modifier.fillMaxWidth().defaultMinSize(minHeight = 116.dp).padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(52.dp).clip(RoundedCornerShape(17.dp)).background(Purple.copy(alpha = .14f)), contentAlignment = Alignment.Center) { Icon(Icons.Default.Devices, "Aura Ecosystem", tint = Purple, modifier = Modifier.size(27.dp)) }
+                    Column(Modifier.weight(1f).padding(start = 15.dp, end = 8.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Text("AURA ECOSYSTEM", color = Purple, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+                        Text("Your devices, in sync", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                        Text("Share focus, text, photos and files over Wi‑Fi", color = Muted, fontSize = 12.sp, lineHeight = 17.sp)
+                    }
+                    Icon(Icons.Default.ArrowForward, "Open Aura Ecosystem", tint = Purple)
+                }
+            }
+        }
+        Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(22.dp)) {
+            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Palette, null, tint = Purple)
+                    Column(Modifier.weight(1f).padding(start = 12.dp)) { Text("Appearance", fontWeight = FontWeight.SemiBold); Text("Choose your AURA theme", color = Muted, fontSize = 11.sp) }
+                }
+                Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    ThemeChoice("Light", Icons.Default.LightMode, !isDarkMode, Modifier.weight(1f)) { onThemeChange(false) }
+                    ThemeChoice("Dark", Icons.Default.DarkMode, isDarkMode, Modifier.weight(1f)) { onThemeChange(true) }
+                }
+            }
+        }
+        MoreLinkCard("App blocklist", "Choose apps to pause during Focus", Icons.Default.Block, onBlocklist)
+        MoreLinkCard("Common table", "See the community leaderboard", Icons.Default.Leaderboard, onTable)
+        MoreLinkCard("About AURA", "Point rules, app details and connect", Icons.Default.Info, onInfo)
+        Text("Aura Ecosystem · Local Wi‑Fi works without mobile data after setup", color = Muted, fontSize = 11.sp, modifier = Modifier.fillMaxWidth().padding(top = 4.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+    }
+}
+
+@Composable private fun BlocklistPage(context: android.content.Context) {
+    val prefs = remember { context.getSharedPreferences("aura_native", Context.MODE_PRIVATE) }
+    var blocked by remember { mutableStateOf(FocusAppPolicy.blockedPackages(context)) }
+    var query by remember { mutableStateOf("") }
+    val installedApps by produceState(initialValue = emptyList<Pair<String, String>>()) {
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                val launchIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+                context.packageManager.queryIntentActivities(launchIntent, 0)
+                    .mapNotNull { info -> info.activityInfo?.packageName?.takeIf { it != context.packageName }?.let { it to info.loadLabel(context.packageManager).toString() } }
+                    .distinctBy { it.first }.sortedBy { it.second.lowercase() }
+            }.getOrDefault(emptyList())
+        }
+    }
+    val filtered = installedApps.filter { it.second.contains(query, ignoreCase = true) || it.first.contains(query, ignoreCase = true) }
+    Column(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        SectionTitle("App blocklist", "Choose what Focus pauses")
+        Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(20.dp)) {
+            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("${blocked.size} apps selected", color = Purple, fontWeight = FontWeight.SemiBold)
+                Text("Selected apps are blocked only while Focus is active and Android Accessibility access is enabled. This list is saved on this device and shared to your Aura devices when a focus session starts.", color = Muted, fontSize = 12.sp, lineHeight = 17.sp)
+            }
+        }
+        OutlinedTextField(query, { query = it }, modifier = Modifier.fillMaxWidth(), singleLine = true, label = { Text("Find an installed app") }, leadingIcon = { Icon(Icons.Default.Search, null) })
+        if (!FocusBlockAccessibilityService.isEnabled(context)) {
+            Text("Enable AURA in Accessibility settings for app blocking to work.", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+            TextButton(onClick = { runCatching { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) } }) { Text("Open Accessibility settings") }
+        }
+        LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = 16.dp)) {
+            items(filtered, key = { it.first }) { (packageName, label) ->
+                val selected = packageName in blocked
+                Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(16.dp)) {
+                    Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).pressScaleClickable {
+                        val next = blocked.toMutableSet().apply { if (selected) remove(packageName) else add(packageName) }
+                        blocked = next
+                        prefs.edit().putStringSet("focus_blocklist", next).apply()
+                    }.padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(38.dp).clip(CircleShape).background(Purple.copy(alpha = .13f)), contentAlignment = Alignment.Center) { Text(label.firstOrNull()?.uppercase() ?: "A", color = Purple, fontWeight = FontWeight.Bold) }
+                        Column(Modifier.weight(1f).padding(start = 12.dp)) { Text(label, fontWeight = FontWeight.Medium, maxLines = 1); Text(packageName, color = Muted, fontSize = 10.sp, maxLines = 1) }
+                        Icon(if (selected) Icons.Default.RemoveCircle else Icons.Default.AddCircle, if (selected) "Remove from blocklist" else "Add to blocklist", tint = if (selected) Purple else Muted)
+                    }
+                }
+            }
+            if (filtered.isEmpty() && installedApps.isNotEmpty()) item { EmptyCard("No installed apps match that search.") }
+            if (installedApps.isEmpty()) item { EmptyCard("Loading installed apps…") }
+        }
+    }
+}
+
+@Composable private fun ThemeChoice(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    val background = if (selected) Purple.copy(alpha = .18f) else MaterialTheme.colorScheme.background
+    val border = if (selected) Purple.copy(alpha = .65f) else Muted.copy(alpha = .24f)
+    Surface(modifier.heightIn(min = 48.dp).clip(RoundedCornerShape(14.dp)).pressScaleClickable(onClick), color = background, shape = RoundedCornerShape(14.dp), border = androidx.compose.foundation.BorderStroke(1.dp, border)) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+            Icon(icon, null, tint = if (selected) Purple else Muted, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text(label, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal)
+        }
+    }
+}
+
+@Composable private fun MoreLinkCard(title: String, subtitle: String, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
+    Card(modifier = Modifier.pressScaleClickable(onClick), colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(20.dp)) {
+        Row(Modifier.fillMaxWidth().heightIn(min = 72.dp).padding(horizontal = 18.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(icon, null, tint = Purple); Column(Modifier.weight(1f).padding(start = 14.dp)) { Text(title, fontWeight = FontWeight.SemiBold); Text(subtitle, color = Muted, fontSize = 12.sp) }; Icon(Icons.Default.ChevronRight, null, tint = Muted)
+        }
     }
 }
 
@@ -583,22 +749,30 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
             }
         }
     }
-    LaunchedEffect(Unit) { while (true) { peers = LanShare.peers(context); delay(1500) } }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        SectionTitle("Aura Ecosystem", "Share locally over the same Wi-Fi")
-        Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(18.dp)) {
-            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Nearby Aura devices", fontWeight = FontWeight.Bold)
-                Text(if (peers.isEmpty()) "Looking for signed-in Aura devices on this Wi-Fi…" else peers.joinToString { it.optString("name", "Aura device") }, color = Muted, fontSize = 12.sp)
-                Text("Focus sessions and clipboard text sync automatically between these devices. Files and images you choose here are encrypted and saved in Downloads/Aura Ecosystem.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
+    LaunchedEffect(Unit) { while (true) { val latest = LanShare.peers(context); if (latest.toString() != peers.toString()) peers = latest; delay(3500) } }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        SectionTitle("Aura Ecosystem", "A private connection between your devices")
+        Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(24.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Purple.copy(alpha = .16f))) {
+            Box(Modifier.fillMaxWidth().background(Brush.linearGradient(listOf(Purple.copy(alpha = .16f), Color(0xFF5AC3B4).copy(alpha = .06f), Surface)))) {
+                Text("∞", color = Purple.copy(alpha = .08f), fontSize = 140.sp, lineHeight = 140.sp, modifier = Modifier.align(Alignment.CenterEnd).offset(x = 26.dp))
+                Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(42.dp).clip(RoundedCornerShape(14.dp)).background(Purple.copy(alpha = .15f)), contentAlignment = Alignment.Center) { Icon(Icons.Default.Wifi, null, tint = Purple) }
+                        Column(Modifier.weight(1f).padding(start = 12.dp)) { Text("LOCAL NETWORK", color = Purple, fontSize = 9.sp, letterSpacing = 1.4.sp, fontWeight = FontWeight.Bold); Text(if (peers.isEmpty()) "Searching nearby" else "${peers.size} Aura device${if (peers.size == 1) "" else "s"} nearby", fontSize = 16.sp, fontWeight = FontWeight.SemiBold) }
+                        if (peers.isNotEmpty()) Icon(Icons.Default.CheckCircle, "Aura devices connected", tint = MaterialTheme.colorScheme.secondary)
+                    }
+                    HorizontalDivider(color = Muted.copy(alpha = .17f))
+                    Text(if (peers.isEmpty()) "Open Aura on another signed-in device connected to this Wi‑Fi." else peers.joinToString("  ·  ") { it.optString("name", "Aura device") }, color = Muted, fontSize = 12.sp, lineHeight = 17.sp)
+                    Text("Focus sync and file transfers work over local Wi‑Fi without mobile data or internet after both devices have signed in once. Shared files are encrypted in transit.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
+                }
             }
         }
-        Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(18.dp)) {
-            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Send text", fontWeight = FontWeight.Bold)
-                OutlinedTextField(value = text, onValueChange = { text = it }, modifier = Modifier.fillMaxWidth(), minLines = 3, label = { Text("Text to share") })
+        Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(22.dp)) {
+            Column(Modifier.fillMaxWidth().padding(17.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.ContentPaste, null, tint = Purple); Text("Share text", modifier = Modifier.padding(start = 10.dp), fontWeight = FontWeight.SemiBold) }
+                OutlinedTextField(value = text, onValueChange = { text = it }, modifier = Modifier.fillMaxWidth(), minLines = 3, shape = RoundedCornerShape(14.dp), label = { Text("Paste or type something") })
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { val clip = (context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as ClipboardManager).primaryClip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty(); if (clip.isNotBlank()) text = clip }) { Text("Paste") }
+                    OutlinedButton(onClick = { val clip = (context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as ClipboardManager).primaryClip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty(); if (clip.isNotBlank()) text = clip }, modifier = Modifier.heightIn(min = 48.dp), shape = RoundedCornerShape(14.dp)) { Icon(Icons.Default.ContentPaste, null, modifier = Modifier.size(17.dp)); Spacer(Modifier.width(7.dp)); Text("Paste") }
                     Button(onClick = {
                         scope.launch {
                             val current = LanShare.peers(context)
@@ -607,13 +781,13 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                             val failed = withContext(Dispatchers.IO) { current.count { runCatching { LanShare.sendText(context, it, text) }.isFailure } }
                             status = if (failed == 0) "Text sent to all nearby Aura devices." else "Sent, but $failed device(s) could not be reached."
                         }
-                    }, enabled = text.isNotBlank() && peers.isNotEmpty()) { Text("Send to Aura devices") }
+                    }, enabled = text.isNotBlank() && peers.isNotEmpty(), modifier = Modifier.heightIn(min = 48.dp), shape = RoundedCornerShape(14.dp)) { Icon(Icons.Default.Send, null, modifier = Modifier.size(17.dp)); Spacer(Modifier.width(7.dp)); Text("Send to devices") }
                 }
             }
         }
-        Button(onClick = { picker.launch(arrayOf("*/*")) }, enabled = peers.isNotEmpty(), modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.AttachFile, null); Spacer(Modifier.width(8.dp)); Text("Choose a file or image") }
-        if (status.isNotBlank()) Text(status, color = Purple, fontSize = 12.sp)
-        Text("Devices must be signed into the same Aura account, connected to the same Wi-Fi, and have Aura running or its accessibility service enabled. Transfers stay on the local network and do not use Aura’s server.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
+        OutlinedButton(onClick = { picker.launch(arrayOf("*/*")) }, enabled = peers.isNotEmpty(), modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp), shape = RoundedCornerShape(16.dp)) { Icon(Icons.Default.AttachFile, null); Spacer(Modifier.width(8.dp)); Text("Choose a photo or file") }
+        if (status.isNotBlank()) Surface(color = MaterialTheme.colorScheme.secondary.copy(alpha = .12f), shape = RoundedCornerShape(13.dp)) { Text(status, color = MaterialTheme.colorScheme.secondary, fontSize = 12.sp, modifier = Modifier.fillMaxWidth().padding(13.dp)) }
+        Text("Devices need the same Aura account and Wi‑Fi network. After initial sign-in and key setup, focus sync and file transfers stay local; internet and mobile data are not needed. Clipboard sync follows Android’s foreground clipboard-access rules.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
     }
 }
 
@@ -723,7 +897,7 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                         Text(date?.format(formatter) ?: task.optString("deadline"), color = Muted, fontSize = 11.sp)
                         val type = task.optString("reminderType", "none")
                         if (type != "none") Text(if (type == "alarm") "Alarm set" else "Notification set", color = Purple, fontSize = 10.sp)
-                        if (task.optBoolean("done")) Text("Completed", color = Color(0xFF83D6C4), fontSize = 10.sp)
+                        if (task.optBoolean("done")) Text("Completed", color = MaterialTheme.colorScheme.secondary, fontSize = 10.sp)
                     }
                     TextButton(onClick = {
                         val updated = JSONArray(); for (i in 0 until tasks.length()) { val old = tasks.optJSONObject(i) ?: continue; updated.put(if (old.optString("id") == task.optString("id")) JSONObject(old.toString()).put("done", !old.optBoolean("done")) else old) }; saveTasks(updated)
@@ -948,10 +1122,10 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
     }
 }
 
-@Composable private fun InfoPage(onSignOut: () -> Unit) {
+@Composable private fun InfoPage(isDarkMode: Boolean, onSignOut: () -> Unit) {
     val atmosphere = rememberInfiniteTransition(label = "info atmosphere")
     val infinityGlow by atmosphere.animateFloat(0.12f, 0.32f, infiniteRepeatable(tween(2300, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "infinity glow")
-    LazyColumn(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0xFF11111B), Color(0xFF111A22), Night))).padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(top = 10.dp, bottom = 22.dp)) {
+    LazyColumn(Modifier.fillMaxSize().background(if (isDarkMode) Brush.verticalGradient(listOf(Color(0xFF11111B), Color(0xFF111A22), Night)) else Brush.linearGradient(listOf(MaterialTheme.colorScheme.background, MaterialTheme.colorScheme.surface))).padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(top = 10.dp, bottom = 22.dp)) {
         item {
             Box(Modifier.fillMaxWidth().height(242.dp).clip(RoundedCornerShape(28.dp)).background(Brush.linearGradient(listOf(Color(0xFF30235A), Color(0xFF171925), Color(0xFF16423F))))) {
                 Text("∞", color = Purple.copy(alpha = infinityGlow), fontSize = 168.sp, lineHeight = 168.sp, modifier = Modifier.align(Alignment.TopEnd).offset(x = 10.dp, y = (-30).dp))
@@ -978,8 +1152,20 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
     }
 }
 
-@Composable private fun InfoCard(title: String, body: String, extra: (@Composable () -> Unit)? = null) { Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1B1A29)), border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF37334C)), shape = RoundedCornerShape(20.dp)) { Column(Modifier.fillMaxWidth().padding(17.dp)) { Text("∞   $title", color = Purple, fontWeight = FontWeight.Bold, fontSize = 14.sp); Text(body, color = Muted, fontSize = 12.sp, lineHeight = 19.sp, modifier = Modifier.padding(top = 8.dp)); extra?.invoke() } } }
-@Composable private fun LinkRow(label: String, target: String, url: String, context: android.content.Context) { Text("$label  ·  $target  ↗", color = Purple, fontSize = 11.sp, modifier = Modifier.fillMaxWidth().clickable { context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))) }.padding(top = 12.dp)) }
+@Composable private fun InfoCard(title: String, body: String, extra: (@Composable () -> Unit)? = null) { Card(colors = CardDefaults.cardColors(containerColor = Surface), border = androidx.compose.foundation.BorderStroke(1.dp, Muted.copy(alpha = .16f)), shape = RoundedCornerShape(20.dp)) { Column(Modifier.fillMaxWidth().padding(17.dp)) { Text("∞   $title", color = Purple, fontWeight = FontWeight.Bold, fontSize = 14.sp); Text(body, color = Muted, fontSize = 12.sp, lineHeight = 19.sp, modifier = Modifier.padding(top = 8.dp)); extra?.invoke() } } }
+@Composable private fun LinkRow(label: String, target: String, url: String, context: android.content.Context) {
+    Text("$label  ·  $target  ↗", color = Purple, fontSize = 14.sp,
+        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).pressScaleClickable { context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))) }
+            .padding(horizontal = 8.dp, vertical = 12.dp))
+}
+@Composable private fun Modifier.pressScaleClickable(onClick: () -> Unit): Modifier {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val motionEnabled = Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) > 0f
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(if (motionEnabled && pressed) .97f else 1f, animationSpec = spring(stiffness = 700f), label = "touch-compression")
+    return this.graphicsLayer { scaleX = scale; scaleY = scale }.clickable(interactionSource = interaction, indication = LocalIndication.current, onClick = onClick)
+}
 @Composable private fun SectionTitle(title: String, sub: String) { Column(Modifier.padding(top = 6.dp, bottom = 2.dp)) { Text(title, fontSize = 22.sp, fontWeight = FontWeight.Bold); Text(sub.uppercase(), color = Muted, fontSize = 9.sp, letterSpacing = 1.2.sp) } }
 @Composable private fun EmptyCard(text: String) { Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) { Text(text, Modifier.fillMaxWidth().padding(16.dp), color = Muted, fontSize = 12.sp, lineHeight = 18.sp) } }
 @Composable private fun AuraField(label: String, value: String, onChange: (String) -> Unit, keyboard: KeyboardType = KeyboardType.Text, password: Boolean = false) {

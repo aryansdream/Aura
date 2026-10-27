@@ -91,7 +91,9 @@ object LanShare {
     fun sendText(context: Context, peer: JSONObject, text: String) {
         val bytes = text.toByteArray(Charsets.UTF_8)
         if (bytes.size > 100_000) error("Text shares must be under 100 KB.")
-        val owner = accountId(context); val key = secret(context) ?: error("Secure Wi-Fi sharing is not ready.")
+        val owner = accountId(context)
+        if (owner.isBlank()) error("Sign in to the same Aura account on each device before sharing.")
+        val key = secret(context) ?: error("Secure Wi-Fi sharing is not ready.")
         val iv = ByteArray(12).also(java.security.SecureRandom()::nextBytes)
         val header = JSONObject().put("accountId", owner).put("deviceId", deviceId(context)).put("name", "Aura shared text")
             .put("mime", "text/plain").put("iv", android.util.Base64.encodeToString(iv, android.util.Base64.NO_WRAP)).put("text", true)
@@ -121,7 +123,9 @@ object LanShare {
         if (headerLength !in 2..4096) return
         val bytes = ByteArray(headerLength); input.readFully(bytes)
         val header = runCatching { JSONObject(String(bytes, Charsets.UTF_8)) }.getOrNull() ?: return
-        if (header.optString("accountId") != accountId(context) || header.optString("deviceId") == deviceId(context)) return
+        val currentAccount = accountId(context)
+        val senderAccount = header.optString("accountId")
+        if (currentAccount.isBlank() || senderAccount.isBlank() || senderAccount != currentAccount || header.optString("deviceId") == deviceId(context)) return
         val key = secret(context) ?: return
         val iv = runCatching { android.util.Base64.decode(header.optString("iv"), android.util.Base64.NO_WRAP) }.getOrNull() ?: return
         if (iv.size != 12) return

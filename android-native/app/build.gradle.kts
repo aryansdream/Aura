@@ -12,7 +12,7 @@ android {
         applicationId = "com.aryansdream.aura"
         minSdk = 26
         targetSdk = 36
-        versionCode = 25
+        versionCode = 26
         versionName = "1.4.0"
     }
 

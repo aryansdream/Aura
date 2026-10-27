@@ -11,6 +11,7 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.NetworkInterface
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
@@ -65,6 +66,7 @@ object LanFocusSync {
                         .put("blockApps", prefs.getBoolean("block_social_apps", false))
                         .put("blockNotifications", prefs.getBoolean("block_social_notifications", false))
                         .put("waterInterval", prefs.getInt("water_interval_minutes", 30).coerceIn(5, 90))
+                        .put("blockedPackages", org.json.JSONArray(FocusAppPolicy.blockedPackages(app).take(40)))
                 }
                 val envelope = JSONObject().put("payload", payload.toString()).put("signature", sign(key, payload.toString()))
                 val bytes = envelope.toString().toByteArray(Charsets.UTF_8)
@@ -155,7 +157,8 @@ object LanFocusSync {
                     val account = runCatching { JSONObject(prefs.getString("account_cache", "{}") ?: "{}") }.getOrDefault(JSONObject())
                     val currentUser = account.optJSONObject("user")?.optString("id").orEmpty()
                     val key = account.optJSONObject("profile")?.optString("lanSyncKey").orEmpty()
-                    if (key.length < 32 || message.optString("accountId") != currentUser || message.optString("deviceId") == deviceId(prefs)) continue
+                    val messageAccount = message.optString("accountId")
+                    if (currentUser.isBlank() || messageAccount.isBlank() || key.length < 32 || messageAccount != currentUser || message.optString("deviceId") == deviceId(prefs)) continue
                     if (!constantTimeEquals(envelope.optString("signature"), sign(key, body))) continue
                     val age = System.currentTimeMillis() - message.optLong("sentAt", 0L)
                     if (age !in 0..8_000L) continue
@@ -190,6 +193,7 @@ object LanFocusSync {
                             .putExtra("blockApps", message.optBoolean("blockApps"))
                             .putExtra("blockNotifications", message.optBoolean("blockNotifications"))
                             .putExtra("waterInterval", message.optInt("waterInterval", 30))
+                            .putExtra("blockedPackages", message.optJSONArray("blockedPackages")?.toString())
                             .putExtra("session", session)
                             .putExtra("remoteSync", true)
                         runCatching { if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(start) else context.startService(start) }
@@ -220,18 +224,33 @@ object LanFocusSync {
 
     private fun isWifiConnected(context: Context): Boolean {
         val manager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val network = manager.activeNetwork ?: return false
-        return manager.getNetworkCapabilities(network)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+        // Look for a connected Wi-Fi transport directly. A hotspot with no WAN has no
+        // validated internet route, and may not be ConnectivityManager.activeNetwork.
+        return manager.allNetworks.any { network ->
+            manager.getNetworkCapabilities(network)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+        }
     }
 
     private fun broadcastAddress(context: Context): InetAddress {
         val wifi = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         val dhcp = wifi.dhcpInfo
         val ip = dhcp.ipAddress
-        val mask = if (dhcp.netmask == 0) 0x00ffffff else dhcp.netmask
-        val broadcast = (ip and mask) or mask.inv()
-        val bytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(broadcast).array()
-        return InetAddress.getByAddress(bytes)
+        if (ip != 0) {
+            val mask = if (dhcp.netmask == 0) 0x00ffffff else dhcp.netmask
+            val broadcast = (ip and mask) or mask.inv()
+            val bytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(broadcast).array()
+            return InetAddress.getByAddress(bytes)
+        }
+        // Android's tethering host can report an empty DhcpInfo. Use the local Wi-Fi
+        // interface broadcast address so a phone hotspot still works without WAN data.
+        val interfaceBroadcast = runCatching {
+            NetworkInterface.getNetworkInterfaces().toList().asSequence()
+                .filter { it.isUp && (it.name.startsWith("wlan") || it.name.startsWith("ap")) }
+                .flatMap { it.interfaceAddresses.asSequence() }
+                .mapNotNull { it.broadcast }
+                .firstOrNull()
+        }.getOrNull()
+        return interfaceBroadcast ?: InetAddress.getByName("255.255.255.255")
     }
 
     private fun deviceId(prefs: android.content.SharedPreferences): String {

@@ -10,12 +10,12 @@ class FocusNotificationListener : NotificationListenerService() {
     override fun onListenerConnected() {
         super.onListenerConnected()
         if (isBlockerEnabled() && isFocusRunning()) activeNotifications.orEmpty()
-            .filter { SocialAppPackages.contains(it.packageName) }
+            .filter { FocusAppPolicy.isDistracting(this, it.packageName) }
             .forEach { runCatching { cancelNotification(it.key) } }
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
-        if (sbn != null && isBlockerEnabled() && isFocusRunning() && SocialAppPackages.contains(sbn.packageName)) {
+        if (sbn != null && isBlockerEnabled() && isFocusRunning() && FocusAppPolicy.isDistracting(this, sbn.packageName)) {
             runCatching { cancelNotification(sbn.key) }
         }
     }

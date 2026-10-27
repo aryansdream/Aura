@@ -1,9 +1,9 @@
 {
-  "versionCode": 25,
+  "versionCode": 26,
   "versionName": "1.4.0",
   "apkUrl": "https://aura-day-tracker.vercel.app/aura-android-1.4.0-master.apk",
-  "sha256": "97db546e3225054485e558b5ddaa876fab094c4dd758d1e25a37371f5e1094c5",
-  "releaseNotes": "Aura Ecosystem: signed same-Wi-Fi focus session sync, encrypted local text/file/image sharing, transparent infinity AURA logo, and existing update notifications. Local sharing works after each device has signed in once and cached its account sync key.",
+  "sha256": "5879ae53a799705a63a6f2a5e0df70ba741de5a02655ae6d2069bbf54e9b570e",
+  "releaseNotes": "Aura Ecosystem: continuous transparent infinity AURA logo, refined light/dark interface, same-Wi-Fi focus and encrypted file sharing, and a short four-beep focus-completion cue. Focus completion notification is silent; scheduled class and task alarms remain separate.",
   "defaultVersionName": "1.1.8",
   "defaultApkUrl": "https://aura-day-tracker.vercel.app/aura-android-1.1.8.apk"
 }

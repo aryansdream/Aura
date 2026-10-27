@@ -4,7 +4,6 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
-import android.media.AudioAttributes
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -12,7 +11,8 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
-import android.media.RingtoneManager
+import android.media.AudioManager
+import android.media.ToneGenerator
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -33,12 +33,11 @@ class FocusService : Service() {
         if (Build.VERSION.SDK_INT >= 26) manager.createNotificationChannel(NotificationChannel(CHANNEL, "Focus timer", NotificationManager.IMPORTANCE_LOW))
         if (Build.VERSION.SDK_INT >= 26) manager.createNotificationChannel(NotificationChannel(WATER_CHANNEL, "Focus water reminders", NotificationManager.IMPORTANCE_DEFAULT))
         if (Build.VERSION.SDK_INT >= 26) {
-            val alarm = NotificationChannel(ALARM_CHANNEL, "Focus timer alerts", NotificationManager.IMPORTANCE_HIGH)
-            alarm.description = "Sound and notification when a focus session ends"
-            alarm.enableVibration(true)
-            alarm.vibrationPattern = longArrayOf(0, 450, 180, 450)
-            alarm.setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM), AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
-            manager.createNotificationChannel(alarm)
+            val completion = NotificationChannel(COMPLETION_CHANNEL, "Focus session complete", NotificationManager.IMPORTANCE_DEFAULT)
+            completion.description = "A silent completion notice; AURA plays a short four-beep cue."
+            completion.enableVibration(false)
+            completion.setSound(null, null)
+            manager.createNotificationChannel(completion)
         }
     }
 
@@ -55,6 +54,11 @@ class FocusService : Service() {
             .putBoolean("block_social_notifications", intent?.getBooleanExtra("blockNotifications", false) ?: false)
             .putInt("water_interval_minutes", intent?.getIntExtra("waterInterval", 30)?.coerceIn(5, 90) ?: 30)
             .apply()
+        if (remoteSync) runCatching {
+            val encoded = intent?.getStringExtra("blockedPackages") ?: return@runCatching
+            val values = org.json.JSONArray(encoded)
+            prefs.edit().putStringSet("focus_blocklist", (0 until values.length()).mapNotNull { values.optString(it).takeIf(String::isNotBlank) }.toSet()).apply()
+        }
         val endWall = if (restoring) prefs.getLong("focus_wall_deadline", 0L)
             else if (remoteSync) intent?.getLongExtra("endsAt", 0L)?.takeIf { it > 0L } ?: nowWall + (intent?.getLongExtra("duration", 25L * 60_000L) ?: 25L * 60_000L)
             else nowWall + (intent?.getLongExtra("duration", 25L * 60_000L) ?: 25L * 60_000L)
@@ -170,18 +174,38 @@ class FocusService : Service() {
 
     private fun showCompletion(subject: String) {
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val alert = NotificationCompat.Builder(this, ALARM_CHANNEL)
+        val alert = NotificationCompat.Builder(this, COMPLETION_CHANNEL)
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
             .setContentTitle("Focus session complete")
             .setContentText(if (subject.isBlank()) "Your timer has finished. Take a short break." else "$subject is complete. Take a short break.")
             .setContentIntent(open)
             .setAutoCancel(true)
-            .setCategory(NotificationCompat.CATEGORY_ALARM)
-            .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setVibrate(longArrayOf(0, 450, 180, 450))
-            .setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM))
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setSilent(true)
             .build()
-        getSystemService(NotificationManager::class.java).notify(ALARM_NOTIFICATION, alert)
+        getSystemService(NotificationManager::class.java).notify(COMPLETION_NOTIFICATION, alert)
+        playCompletionBeeps()
+    }
+
+    private fun playCompletionBeeps() {
+        Thread({
+            val tone = runCatching { ToneGenerator(AudioManager.STREAM_NOTIFICATION, 75) }.getOrNull() ?: return@Thread
+            try {
+                tone.startTone(ToneGenerator.TONE_PROP_BEEP, 180)
+                Thread.sleep(230)
+                tone.startTone(ToneGenerator.TONE_PROP_BEEP, 180)
+                Thread.sleep(650)
+                tone.startTone(ToneGenerator.TONE_PROP_BEEP, 180)
+                Thread.sleep(230)
+                tone.startTone(ToneGenerator.TONE_PROP_BEEP, 180)
+                Thread.sleep(200)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            } finally {
+                tone.release()
+            }
+        }, "Aura-focus-completion-beep").apply { isDaemon = true; start() }
     }
 
     private fun stopFocus(syncRemote: Boolean = true) {
@@ -227,10 +251,10 @@ class FocusService : Service() {
         const val ACTION_STOP_REMOTE = "com.aryansdream.aura.STOP_REMOTE_FOCUS"
         const val ACTION_FOCUS_STATE_CHANGED = "com.aryansdream.aura.FOCUS_STATE_CHANGED"
         private const val CHANNEL = "aura_focus"
-        private const val ALARM_CHANNEL = "aura_focus_alarm"
+        private const val COMPLETION_CHANNEL = "aura_focus_complete_beeps_v1"
         private const val WATER_CHANNEL = "aura_focus_water"
         private const val NOTIFICATION = 701
-        private const val ALARM_NOTIFICATION = 702
+        private const val COMPLETION_NOTIFICATION = 702
         private const val WATER_NOTIFICATION = 703
     }
 }

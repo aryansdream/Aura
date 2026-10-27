@@ -66,7 +66,7 @@ class FocusBlockAccessibilityService : AccessibilityService() {
         if (foregroundPackage == packageName && blocker != null) return
         if (foregroundPackage == lastForegroundPackage) return
         lastForegroundPackage = foregroundPackage
-        if (FocusAppPolicy.isDistracting(foregroundPackage)) {
+        if (FocusAppPolicy.isDistracting(this, foregroundPackage)) {
             handler.removeCallbacks(delayedHide)
             showBlocker()
         } else if (blocker != null) {
@@ -85,7 +85,7 @@ class FocusBlockAccessibilityService : AccessibilityService() {
             hideBlocker(); return
         }
         val current = rootInActiveWindow?.packageName?.toString()
-        if (FocusAppPolicy.isDistracting(current)) showBlocker() else if (blocker != null) hideBlocker()
+        if (FocusAppPolicy.isDistracting(this, current)) showBlocker() else if (blocker != null) hideBlocker()
     }
 
     override fun onDestroy() {
