@@ -107,6 +107,18 @@ export function initPlanner(api, getAccount) {
     get('scheduleToday').innerHTML = todayHtml;
     get('scheduleTodayLabel').textContent = `${selectedItems.length} ${selectedItems.length === 1 ? 'block' : 'blocks'}`;
     get('scheduleWeek').innerHTML = weekHtml;
+    const homeTodayItems = plannedOn(todayDate).sort((a,b) => a.start.localeCompare(b.start));
+    const homeDay = new Date(`${todayDate}T12:00:00`).getDay();
+    const homeSunday = new Date(`${todayDate}T12:00:00`); homeSunday.setDate(homeSunday.getDate() - homeDay);
+    const homeItemHtml = item => `<div class="schedule-item" style="--subject:${subjectColor(item.subjectId)}"><span class="schedule-time">${esc(item.start)}–${esc(item.end)}</span><b>${esc(item.title)}</b><small>${esc(subjectName(item.subjectId))}${item.kind ? ` · ${esc(item.kind)}` : ''}</small></div>`;
+    get('homeScheduleToday').innerHTML = `<div class="schedule-featured-card"><div class="schedule-day-name">Today<span>${dateLabel(todayDate)}</span></div>${homeTodayItems.length ? homeTodayItems.map(homeItemHtml).join('') : '<div class="schedule-empty">Nothing planned today</div>'}</div>`;
+    get('homeTimetableSummary').textContent = `${homeTodayItems.length} ${homeTodayItems.length === 1 ? 'block' : 'blocks'} today · tap a day to see its timetable`;
+    get('homeScheduleWeek').innerHTML = week.map((day, index) => {
+      if (index === homeDay) return '';
+      const slotDate = new Date(homeSunday); slotDate.setDate(slotDate.getDate() + index);
+      const date = localDate(slotDate), entries = plannedOn(date).sort((a,b) => a.start.localeCompare(b.start));
+      return `<button type="button" class="schedule-day schedule-day-compact" data-home-date="${date}" aria-label="Open ${day}, ${dateLabel(date)} timetable"><span class="schedule-day-name">${day}<small>${dateLabel(date)}</small></span>${entries.length ? entries.slice(0, 3).map(item => `<div class="schedule-item is-compact" style="--subject:${subjectColor(item.subjectId)}"><span class="schedule-time">${esc(item.start)}–${esc(item.end)}</span><b>${esc(item.title)}</b></div>`).join('') : '<span class="schedule-empty">Free</span>'}${entries.length > 3 ? `<span class="schedule-more">+${entries.length - 3} more</span>` : ''}</button>`;
+    }).join('');
     const current = scheduleSelectedDate === todayDate && selectedItems.find(item => item.start <= `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}` && item.end > `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`);
     get('scheduleNow').textContent = current ? `In your day now · ${current.title}` : 'Make room for what matters';
   }
@@ -338,6 +350,10 @@ export function initPlanner(api, getAccount) {
     if (day) { scheduleSelectedDate = day.dataset.selectDate; renderSchedule(); return; }
     editScheduleEntry(event);
     removeScheduleEntry(event);
+  });
+  get('homeScheduleWeek').addEventListener('click', event => {
+    const day = event.target.closest('[data-home-date]'); if (!day) return;
+    scheduleSelectedDate = day.dataset.homeDate; renderSchedule(); location.hash = 'schedule';
   });
   get('scheduleToday').addEventListener('click', event => { editScheduleEntry(event); removeScheduleEntry(event); });
   get('scheduleDateSelect').addEventListener('change', event => { scheduleSelectedDate = event.target.value || appDate(); renderSchedule(); });

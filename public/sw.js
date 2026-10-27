@@ -1,4 +1,4 @@
-const CACHE = 'aura-shell-v5';
+const CACHE = 'aura-shell-v6';
 const CORE = ['/tasks.js', '/manifest.webmanifest', '/aura-icon-192.png', '/aura-icon-512.png', '/aura-maskable-512.png'];
 
 self.addEventListener('install', event => {
