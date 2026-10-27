@@ -10,6 +10,9 @@ contextBridge.exposeInMainWorld('aura', {
   sendFile: deviceId => ipcRenderer.invoke('send-file', deviceId),
   classify: text => ipcRenderer.invoke('classify', text),
   feedback: (text, label) => ipcRenderer.invoke('feedback', text, label),
+  armScreenCapture: () => ipcRenderer.sendSync('arm-screen-capture'),
+  stopScreenCapture: () => ipcRenderer.send('stop-screen-capture'),
+  inspectScreenFrame: dataUrl => ipcRenderer.invoke('inspect-screen-frame', dataUrl),
   onState: callback => ipcRenderer.on('state', (_event, value) => callback(value)),
   clipboardChanged: () => ipcRenderer.send('clipboard-changed')
 });

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, clipboard, safeStorage, session } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, clipboard, safeStorage, session, desktopCapturer } = require('electron');
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
@@ -28,6 +28,9 @@ let ignoredClipboard = '';
 let lastDesktopClipboard = '';
 let feedback = [];
 let settings = { clipboard: false, mediaDetection: false };
+let screenCaptureArmed = false;
+let screenCaptureActive = false;
+let ocrWorkerPromise = null;
 const deviceId = loadDeviceId();
 
 function userFile(name) { return path.join(app.getPath('userData'), name); }
@@ -93,11 +96,98 @@ function emitState() {
     devices: [...peers.values()].filter(p => Date.now() - p.seenAt < 16000),
     media: mediaEvents.slice(0, 30),
     settings,
+    screenCaptureActive,
     points: account?.stats?.total ?? null,
     streak: account?.stats?.streak ?? null,
     focus: hasActiveFocus(),
     linuxHint: process.platform === 'linux' ? 'MPRIS/playerctl on Linux' : ''
   });
+}
+function localRuntimePath(...parts) {
+  const root = app.isPackaged
+    ? path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules')
+    : path.join(__dirname, '..', 'node_modules');
+  return path.join(root, ...parts);
+}
+async function getOcrWorker() {
+  if (!ocrWorkerPromise) {
+    const { createWorker } = require('tesseract.js');
+    const cachePath = path.join(app.getPath('userData'), 'ocr-cache');
+    fs.mkdirSync(cachePath, { recursive: true, mode: 0o700 });
+    ocrWorkerPromise = createWorker('eng', 1, {
+      workerPath: localRuntimePath('tesseract.js', 'src', 'worker-script', 'node', 'index.js'),
+      langPath: localRuntimePath('@tesseract.js-data', 'eng', '4.0.0_best_int'),
+      cachePath,
+      gzip: true,
+      logger: () => {}
+    }).catch(error => { ocrWorkerPromise = null; throw error; });
+  }
+  return ocrWorkerPromise;
+}
+function pickCaptureSource(sources) {
+  if (!sources.length) return Promise.resolve(null);
+  if (sources.length === 1) return Promise.resolve(sources[0]);
+  const buttons = [...sources.slice(0, 8).map(source => source.name.slice(0, 70)), 'Cancel'];
+  return dialog.showMessageBox(win, {
+    type: 'info',
+    title: 'Choose a media window',
+    message: 'Aura will scan only the window you choose.',
+    detail: 'Screen frames are processed on this PC and discarded. Audio is not captured.',
+    buttons,
+    cancelId: buttons.length - 1,
+    defaultId: buttons.length - 1,
+    noLink: true
+  }).then(({ response }) => response < Math.min(sources.length, 8) ? sources[response] : null);
+}
+function configureScreenCapture() {
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
+    if (permission === 'display-capture') {
+      callback(Boolean(screenCaptureArmed && win && webContents === win.webContents));
+      return;
+    }
+    callback(false);
+  });
+  session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
+    if (!screenCaptureArmed || !settings.mediaDetection || !request.videoRequested || request.audioRequested || !request.userGesture || !win || request.frame?.url?.startsWith('file:') !== true) {
+      callback(null);
+      return;
+    }
+    screenCaptureArmed = false;
+    try {
+      const sources = await desktopCapturer.getSources({
+        types: ['window'],
+        thumbnailSize: { width: 0, height: 0 },
+        fetchWindowIcons: false
+      });
+      const source = await pickCaptureSource(sources);
+      if (!source) { callback(null); return; }
+      screenCaptureActive = true;
+      emitState();
+      callback({ video: source });
+    } catch {
+      screenCaptureActive = false;
+      emitState();
+      callback(null);
+    }
+  });
+}
+async function inspectCapturedFrame(dataUrl) {
+  if (!screenCaptureActive || !settings.mediaDetection || typeof dataUrl !== 'string') throw Error('Start visual scanning first.');
+  const match = dataUrl.match(/^data:image\/(?:jpeg|png);base64,([a-z\d+/=]+)$/i);
+  if (!match || match[1].length > 1200000) throw Error('The captured frame was too large to inspect.');
+  const image = Buffer.from(match[1], 'base64');
+  if (!image.length || image.length > 900000) throw Error('The captured frame was too large to inspect.');
+  const worker = await getOcrWorker();
+  const { data } = await worker.recognize(image);
+  const visibleText = String(data?.text || '').replace(/\s+/g, ' ').trim().slice(0, 1200);
+  if (visibleText.length < 5) return { text: '', result: { category: 'uncertain', confidence: 0.5, label: 'No readable media text', evidence: 0 } };
+  const result = classify(`${lastOwnMedia} ${visibleText}`, feedback);
+  const preview = visibleText.slice(0, 120);
+  mediaEvents.unshift({ source: 'Selected window · local OCR', app: 'Visual content', title: preview, category: result.category, label: result.label, confidence: result.confidence, at: Date.now(), own: true });
+  if (settings.autoPause && hasActiveFocus() && result.category === 'entertainment' && result.confidence >= 0.76) await pauseOwnMedia();
+  mediaEvents = mediaEvents.slice(0, 50);
+  emitState();
+  return { text: preview, result };
 }
 function auraDayKey(date = new Date()) {
   const day = new Date(date);
@@ -326,7 +416,7 @@ function createWindow() {
   win.loadFile(path.join(__dirname, 'index.html'));
   win.on('closed', () => { win = null; });
 }
-app.whenReady().then(() => { loadAccount(); createWindow(); if (account) startLan(); });
+app.whenReady().then(() => { loadAccount(); configureScreenCapture(); createWindow(); if (account) startLan(); });
 setInterval(() => {
   if (!account || !settings.clipboard) return;
   const value = readClipboardText();
@@ -335,7 +425,8 @@ setInterval(() => {
   if (value === ignoredClipboard) { ignoredClipboard = ''; return; }
   broadcast({ kind: 'clipboard', text: value, clipAt: Date.now(), origin: deviceId });
 }, 700);
-app.on('window-all-closed', () => { stopLan(); app.quit(); });
+app.on('before-quit', () => { try { ocrWorkerPromise?.then(worker => worker.terminate()).catch(() => {}); } catch {} });
+app.on('window-all-closed', () => { screenCaptureActive = false; stopLan(); app.quit(); });
 ipcMain.handle('state', () => ({ connected: !!account, accountName: account?.name || '', accountId: account?.accountId || '', devices: [...peers.values()], media: mediaEvents, settings, points: account?.stats?.total ?? null, streak: account?.stats?.streak ?? null, focus: hasActiveFocus() }));
 ipcMain.handle('open-dashboard', () => { const w = new BrowserWindow({ width: 1200, height: 850, parent: win, webPreferences: { partition: PARTITION, contextIsolation: true, nodeIntegration: false, sandbox: true } }); w.loadURL(URL); });
 ipcMain.handle('sign-in', async (_event, credentials) => {
@@ -358,9 +449,12 @@ ipcMain.handle('sign-in', async (_event, credentials) => {
 });
 ipcMain.handle('check-account', async () => { await refreshAccount(); return true; });
 ipcMain.handle('disconnect', () => { stopLan(); account = null; try { fs.unlinkSync(userFile('account.json')); } catch {} emitState(); });
-ipcMain.handle('set-setting', (_e, name, value) => { if (!['clipboard', 'mediaDetection', 'autoPause'].includes(name)) return false; settings[name] = !!value; if (name === 'autoPause' && value) settings.mediaDetection = true; fs.writeFileSync(userFile('settings.json'), JSON.stringify(settings), { mode: 0o600 }); if (settings.mediaDetection) pollMedia(); emitState(); return true; });
+ipcMain.handle('set-setting', (_e, name, value) => { if (!['clipboard', 'mediaDetection', 'autoPause'].includes(name)) return false; settings[name] = !!value; if (name === 'autoPause' && value) settings.mediaDetection = true; if (name === 'mediaDetection' && !value) { screenCaptureActive = false; screenCaptureArmed = false; } fs.writeFileSync(userFile('settings.json'), JSON.stringify(settings), { mode: 0o600 }); if (settings.mediaDetection) pollMedia(); emitState(); return true; });
 ipcMain.handle('send-text', async (_e, peerId, value) => { const peer = peers.get(peerId); await sendEncrypted(peer, { name: `Text · ${os.hostname()}`, mime: 'text/plain', data: Buffer.from(String(value).slice(0, 100000)), text: true }); });
 ipcMain.handle('send-file', async (_e, peerId) => { const peer = peers.get(peerId); const picked = await dialog.showOpenDialog(win, { properties: ['openFile'] }); if (picked.canceled || !picked.filePaths[0]) return; const file = picked.filePaths[0]; const data = fs.readFileSync(file); if (data.length > 50 * 1024 * 1024) throw Error('Files must be 50 MB or smaller.'); await sendEncrypted(peer, { name: path.basename(file), mime: 'application/octet-stream', data }); });
 ipcMain.handle('classify', (_e, text) => classify(String(text || '').slice(0, 500), feedback));
 ipcMain.handle('feedback', (_e, text, label) => { if (!['study', 'entertainment'].includes(label)) return; feedback.push([String(text).slice(0, 300), label]); feedback = feedback.slice(-500); fs.writeFileSync(userFile('feedback.json'), JSON.stringify(feedback), { mode: 0o600 }); return classify(text, feedback); });
+ipcMain.on('arm-screen-capture', event => { screenCaptureArmed = Boolean(settings.mediaDetection && win && event.sender === win.webContents); event.returnValue = screenCaptureArmed; });
+ipcMain.on('stop-screen-capture', event => { if (win && event.sender === win.webContents) { screenCaptureArmed = false; screenCaptureActive = false; emitState(); } });
+ipcMain.handle('inspect-screen-frame', (event, dataUrl) => { if (!win || event.sender !== win.webContents) throw Error('Screen inspection is available only from Aura Sync.'); return inspectCapturedFrame(dataUrl); });
 ipcMain.on('clipboard-changed', () => { if (!account || !settings.clipboard) return; const text = readClipboardText(); if (!text || text === ignoredClipboard) { ignoredClipboard = ''; return; } broadcast({ kind: 'clipboard', text, clipAt: Date.now(), origin: deviceId }); });

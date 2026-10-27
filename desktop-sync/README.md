@@ -7,15 +7,15 @@ Aura Sync is the Linux/Windows desktop companion for Aura's local device ecosyst
 - Sign in to the same Aura account once, then discover Aura devices on the current Wi-Fi or a phone hotspot without WAN access.
 - Encrypted text, clipboard, and file sharing between Aura Sync and the existing Android peer protocol.
 - Show nearby Android devices and their focus state, plus cached Aura points and streak.
-- Optional local media classifier. It uses a small Naive Bayes text model on this computer to classify media-session app/title metadata.
+- Optional local media classifier. A compact TF-IDF/logistic-regression model classifies player app/title metadata, OCR text from a user-selected media window, and corrections you provide. It trains and runs on this computer.
 - When enabled on both the PC and Android, a high-confidence entertainment classification can send a signed local pause command. Android can also cover that app with its Accessibility overlay while Focus is active.
 - Open the full Aura web dashboard from Aura Sync.
 
 ## Privacy and limits
 
-Media detection is off by default. Android sends media-session metadata only while a Focus session is active and only after the user enables sharing. The PC decrypts and classifies it locally; no media metadata is sent to Aura's server. Aura does not capture audio or screen images. The app name and classification result remain in the desktop app's in-memory activity list; user corrections are stored locally.
+Media detection is off by default. Android sends media-session metadata only while a Focus session is active and only after the user enables sharing. The PC decrypts and classifies it locally; no media metadata is sent to Aura's server. Optional screen inspection is off until you enable it and select a media window. Aura captures silent, low-resolution frames from only that selected window, runs bundled English OCR and the local classifier, then discards each frame; screenshots are not saved or uploaded. The short OCR preview and result stay in the desktop app's in-memory activity list; user corrections are stored locally.
 
-The classifier is intentionally small and heuristic-quality; its confidence is an estimate, not a guarantee. It only pauses at 76% confidence or higher. A false positive can pause a player, so detection and pausing have separate controls. Android app covering requires Notification access for media sessions and Accessibility access for the overlay. On Linux, system media detection/control uses the optional `playerctl` command and therefore works with MPRIS-capable players. On Windows, it reads Windows media-session metadata and uses the system media-pause key.
+The classifier is a compact text model rather than a general-purpose video-understanding model: screen scanning relies on readable on-screen words (titles, subtitles, menus, and captions), so it may be uncertain when a clip has no visible text. Its confidence is an estimate, not a guarantee. It only pauses at 76% confidence or higher. A false positive can pause a player, so detection and pausing have separate controls. Linux Wayland may show a PipeWire screen-share picker; Windows/X11 show Aura's window chooser. Android app covering requires Notification access for media sessions and Accessibility access for the overlay. On Linux, system media detection/control uses the optional `playerctl` command and therefore works with MPRIS-capable players. On Windows, it reads Windows media-session metadata and uses the system media-pause key.
 
 Sharing and device discovery are limited to the local network. The account must be connected at least once to obtain the existing Aura LAN key; the cached key is protected by the OS secret store when available. Linux installations without a Secret Service provider should use full-disk encryption because Electron's OS credential protection may be unavailable. A firewall may ask to allow Aura Sync on private networks so peers can discover and reach one another.
 
@@ -43,8 +43,10 @@ npm run dist:windows
 ```
 
 Build Windows installers on Windows. The repository workflow at `.github/workflows/aura-sync-build.yml` builds both platform artifacts on GitHub Actions and stores them as downloadable workflow artifacts; it does not publish a release automatically.
-## Aura Sync 1.0.3 desktop release
+## Aura Sync 1.0.4 desktop release
 
-The Ubuntu/Debian 1.0.3 build opens the full Aura planner inside the desktop app and includes the desktop local-network companion. The planner provides the web-backed Focus timer, timetable, subjects, attendance, study logs, scheduled tasks, and account data; the companion provides same-Wi-Fi device discovery, text/clipboard/file sharing, and optional local media metadata classification. Android-only OS integrations such as Android step/screen-time permissions and Accessibility overlays remain Android-specific.
+The Ubuntu/Debian 1.0.4 build opens the full Aura planner inside the desktop app and includes the desktop local-network companion. The planner provides the web-backed Focus timer, timetable, subjects, attendance, study logs, scheduled tasks, and account data; the companion provides same-Wi-Fi device discovery, text/clipboard/file sharing, and an optional local media classifier with selected-window OCR. Android-only OS integrations such as Android step/screen-time permissions and Accessibility overlays remain Android-specific.
+
+The screen classifier is a small local TF-IDF/logistic-regression model that learns from the built-in labeled examples and your corrections. Screen OCR is opt-in, English-only, captures no audio, and discards frames after local processing. It uses readable on-screen text; it does not understand text-free visuals.
 
 The Windows installer remains at 1.0.2 in this release.
