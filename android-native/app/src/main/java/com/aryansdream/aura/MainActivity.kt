@@ -223,11 +223,13 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                 "Tasks" -> TasksPage(context, planner) { next ->
                     planner = next
                     AuraApi.savePlannerDraft(context, next, user?.optString("id").orEmpty())
-                    TaskReminderScheduler.sync(context, next)
+                    val reminderScheduleFailures = TaskReminderScheduler.sync(context, next)
                     scope.launch {
                         busy = true
-                        try { withContext(Dispatchers.IO) { AuraApi.syncPendingPlanner(context, user?.optString("id").orEmpty()) }; syncMessage = "Task saved and reminder scheduled." }
-                        catch (_: Exception) { syncMessage = "Task saved on this device. It will sync when connected." }
+                        try {
+                            withContext(Dispatchers.IO) { AuraApi.syncPendingPlanner(context, user?.optString("id").orEmpty()) }
+                            syncMessage = if (reminderScheduleFailures > 0) "Task saved, but Android could not schedule its alarm. Allow Alarms & reminders in Settings, then reopen Tasks." else "Task saved and reminder scheduled."
+                        } catch (_: Exception) { syncMessage = if (reminderScheduleFailures > 0) "Task saved locally, but its alarm needs Android Alarms & reminders access." else "Task saved on this device. It will sync when connected." }
                         busy = false
                     }
                 }
@@ -499,8 +501,22 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
     var scheduledAt by remember { mutableStateOf(LocalDateTime.now().plusHours(1).withSecond(0).withNano(0)) }
     val tasks = planner.optJSONArray("tasks") ?: JSONArray()
     val alarmManager = context.getSystemService(AlarmManager::class.java)
-    val hasExactPermission = Build.VERSION.SDK_INT < Build.VERSION_CODES.S || alarmManager.canScheduleExactAlarms()
-    val notificationsEnabled = NotificationManagerCompat.from(context).areNotificationsEnabled()
+    fun taskNotificationsAllowed(): Boolean {
+        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return false
+        val channelId = if (reminderType == "alarm") "aura_ringing_task_alarm" else "aura_task_notifications"
+        val channel = context.getSystemService(android.app.NotificationManager::class.java).getNotificationChannel(channelId)
+        return channel == null || channel.importance != android.app.NotificationManager.IMPORTANCE_NONE
+    }
+    var hasExactPermission by remember { mutableStateOf(Build.VERSION.SDK_INT < Build.VERSION_CODES.S || alarmManager.canScheduleExactAlarms()) }
+    var notificationsEnabled by remember { mutableStateOf(taskNotificationsAllowed()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            hasExactPermission = Build.VERSION.SDK_INT < Build.VERSION_CODES.S || alarmManager.canScheduleExactAlarms()
+            notificationsEnabled = taskNotificationsAllowed()
+            delay(1000)
+        }
+    }
+    LaunchedEffect(hasExactPermission) { TaskReminderScheduler.sync(context, planner) }
     var taskError by remember { mutableStateOf("") }
     val formatter = DateTimeFormatter.ofPattern("EEE, d MMM · h:mm a")
     fun saveTasks(next: JSONArray) { save(JSONObject(planner.toString()).put("tasks", next)) }
@@ -533,14 +549,14 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                     FilterChip(selected = reminderType == value, onClick = { reminderType = value }, label = { Text(label) })
                 }
             }
-            Text(if (reminderType == "alarm") "Uses your phone’s alarm tone and vibration at the scheduled time." else if (reminderType == "notification") "Plays a short notification beep at the scheduled time." else "No reminder will be sent.", color = Muted, fontSize = 11.sp)
+            Text(if (reminderType == "alarm") "Rings with your alarm tone and vibration until you tap Stop." else if (reminderType == "notification") "Plays a short notification beep at the scheduled time." else "No reminder will be sent.", color = Muted, fontSize = 11.sp)
             if (taskError.isNotBlank()) Text(taskError, color = Color(0xFFFF8D8D), fontSize = 11.sp)
         }
-        if (reminderType == "notification" && !hasExactPermission) item {
+        if (reminderType in setOf("notification", "alarm") && !hasExactPermission) item {
             Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) {
                 Column(Modifier.fillMaxWidth().padding(14.dp)) {
-                    Text("Allow exact reminders", fontWeight = FontWeight.SemiBold)
-                    Text("Android may delay notifications until you allow AURA to use Alarms & reminders.", color = Muted, fontSize = 11.sp)
+                    Text("Allow alarms & reminders", fontWeight = FontWeight.SemiBold)
+                    Text("Android requires this access for AURA to trigger alarms and notifications at the time you set.", color = Muted, fontSize = 11.sp)
                     TextButton(onClick = {
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) runCatching { context.startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, android.net.Uri.parse("package:${context.packageName}"))) }
                     }) { Text("Open Android settings") }
@@ -551,7 +567,7 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
             if (title.trim().isEmpty()) return@Button
             if (!scheduledAt.isAfter(LocalDateTime.now())) { taskError = "Choose a time in the future."; return@Button }
             if (reminderType != "none" && !notificationsEnabled) { taskError = "Enable notifications in Android settings first."; return@Button }
-            if (reminderType == "notification" && !hasExactPermission) { taskError = "Allow exact alarms in Android settings to schedule this notification."; return@Button }
+            if (reminderType != "none" && !hasExactPermission) { taskError = "Allow Alarms & reminders in Android settings before scheduling this."; return@Button }
             taskError = ""
             val updated = JSONArray(); for (i in 0 until tasks.length()) tasks.optJSONObject(i)?.let(updated::put)
             val dateTime = scheduledAt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm"))
@@ -583,6 +599,20 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable private fun StudyPage(planner: JSONObject, mode: String, save: (JSONObject) -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val alarmManager = context.getSystemService(AlarmManager::class.java)
+    var hasExactPermission by remember { mutableStateOf(Build.VERSION.SDK_INT < Build.VERSION_CODES.S || alarmManager.canScheduleExactAlarms()) }
+    var notificationsEnabled by remember { mutableStateOf(NotificationManagerCompat.from(context).areNotificationsEnabled()) }
+    LaunchedEffect(mode) {
+        while (mode == "Classes") {
+            hasExactPermission = Build.VERSION.SDK_INT < Build.VERSION_CODES.S || alarmManager.canScheduleExactAlarms()
+            notificationsEnabled = NotificationManagerCompat.from(context).areNotificationsEnabled()
+            delay(1000)
+        }
+    }
+    LaunchedEffect(mode, hasExactPermission) {
+        if (mode == "Classes") ClassReminderScheduler.sync(context, planner)
+    }
     val subjects = planner.optJSONArray("subjects") ?: JSONArray()
     val schedule = planner.optJSONArray("schedule") ?: JSONArray()
     var subjectDialog by remember { mutableStateOf(false) }
@@ -636,6 +666,16 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
         }
         if (mode == "Classes") {
             item { Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { SectionTitle("Class timetable", "Open a subject to manage times · attendance check after every class") }; TextButton(onClick = { routineToEdit = null; routineTitle = ""; routineStart = "09:00"; routineEnd = "10:00"; routineDate = ""; routineDays = (LocalDate.now().dayOfWeek.value % 7).toString(); routineReminder = false; routineReminderInterval = 0; routineDialog = true }) { Text("+ Add subject") } } }
+            if (!hasExactPermission || !notificationsEnabled) item {
+                Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                        Text("Enable class alerts", fontWeight = FontWeight.SemiBold)
+                        Text("Android must allow notifications and Alarms & reminders for reliable class start beeps and after-class prompts.", color = Muted, fontSize = 11.sp, lineHeight = 15.sp)
+                        if (!notificationsEnabled) TextButton(onClick = { runCatching { context.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)) } }) { Text("Enable AURA notifications") }
+                        if (!hasExactPermission && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) TextButton(onClick = { runCatching { context.startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, android.net.Uri.parse("package:${context.packageName}"))) } }) { Text("Allow Alarms & reminders") }
+                    }
+                }
+            }
             val classEntries = (0 until schedule.length()).mapNotNull { schedule.optJSONObject(it) }.filter { it.optString("kind", "Class") == "Class" }
             val classGroups = classEntries.groupBy { it.optString("title").ifBlank { "Untitled subject" } }.toSortedMap()
             if (classGroups.isEmpty()) item { EmptyCard("Add a subject and its class times to see your timetable.") }

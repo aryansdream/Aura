@@ -77,7 +77,7 @@ object ClassReminderScheduler {
         } ?: return
         val alarm = context.getSystemService(AlarmManager::class.java)
         val pending = pendingIntent(context, entry.optString("id"), entry.optString("title"))
-        alarm.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, trigger, pending)
+        setClassAlarm(context, alarm, trigger, pending)
     }
 
     private fun cancel(context: Context, id: String) {
@@ -110,7 +110,15 @@ object ClassReminderScheduler {
             }
         val trigger = day?.atTime(endTime)?.atZone(zone)?.toInstant()?.toEpochMilli() ?: return
         val pending = endIntent(context, entry.optString("id"), entry.optString("title"), day.toString(), entry.optString("subjectId"))
-        context.getSystemService(AlarmManager::class.java).setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, trigger, pending)
+        setClassAlarm(context, context.getSystemService(AlarmManager::class.java), trigger, pending)
+    }
+
+    private fun setClassAlarm(context: Context, alarm: AlarmManager, trigger: Long, pending: PendingIntent) {
+        runCatching {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || alarm.canScheduleExactAlarms()) {
+                alarm.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, trigger, pending)
+            } else alarm.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, trigger, pending)
+        }
     }
 }
 
@@ -122,12 +130,13 @@ object TaskReminderScheduler {
     const val ACTION_ALARM = "com.aryansdream.aura.TASK_ALARM"
     private val format = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm")
 
-    fun sync(context: Context, planner: JSONObject) {
+    fun sync(context: Context, planner: JSONObject): Int {
         val prefs = context.getSharedPreferences(STORE, Context.MODE_PRIVATE)
         val previous = runCatching { JSONArray(prefs.getString(KEY, "[]")) }.getOrDefault(JSONArray())
         for (i in 0 until previous.length()) previous.optJSONObject(i)?.let { cancel(context, it.optString("id")) }
         val tasks = planner.optJSONArray("tasks") ?: JSONArray()
         val saved = JSONArray()
+        var failures = 0
         for (i in 0 until tasks.length()) {
             val task = tasks.optJSONObject(i) ?: continue
             val type = task.optString("reminderType", "none")
@@ -135,28 +144,32 @@ object TaskReminderScheduler {
             val at = runCatching { LocalDateTime.parse(task.optString("deadline"), format) }.getOrNull() ?: continue
             val trigger = at.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
             if (trigger <= System.currentTimeMillis()) continue
-            schedule(context, task.optString("id"), task.optString("title"), type, trigger)
-            saved.put(JSONObject().put("id", task.optString("id")))
+            if (schedule(context, task.optString("id"), task.optString("title"), type, trigger)) {
+                saved.put(JSONObject().put("id", task.optString("id")))
+            } else failures++
         }
-        prefs.edit().putString(KEY, saved.toString()).apply()
+        prefs.edit().putString(KEY, saved.toString()).putInt("task_reminder_schedule_failures", failures).apply()
+        return failures
     }
 
-    private fun schedule(context: Context, id: String, title: String, type: String, trigger: Long) {
+    private fun schedule(context: Context, id: String, title: String, type: String, trigger: Long): Boolean {
         val action = if (type == "alarm") ACTION_ALARM else ACTION_NOTIFICATION
         val intent = Intent(context, TaskReminderReceiver::class.java).setAction(action)
             .putExtra("id", id).putExtra("title", title).putExtra("reminderType", type)
         val broadcast = PendingIntent.getBroadcast(context, id.hashCode(), intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val alarmManager = context.getSystemService(AlarmManager::class.java)
-        if (type == "alarm") {
-            val open = PendingIntent.getActivity(context, id.hashCode(), Intent(context, MainActivity::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-            alarmManager.setAlarmClock(AlarmManager.AlarmClockInfo(trigger, open), broadcast)
-        } else {
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || alarmManager.canScheduleExactAlarms()) {
-                alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, trigger, broadcast)
+        return runCatching {
+            if (type == "alarm") {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !alarmManager.canScheduleExactAlarms()) return false
+                val open = PendingIntent.getActivity(context, id.hashCode(), Intent(context, MainActivity::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                alarmManager.setAlarmClock(AlarmManager.AlarmClockInfo(trigger, open), broadcast)
             } else {
-                alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, trigger, broadcast)
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || alarmManager.canScheduleExactAlarms()) {
+                    alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, trigger, broadcast)
+                } else alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, trigger, broadcast)
             }
-        }
+            true
+        }.getOrDefault(false)
     }
 
     private fun cancel(context: Context, id: String) {
@@ -173,6 +186,11 @@ class TaskReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val title = intent.getStringExtra("title").orEmpty().ifBlank { "Your scheduled task" }
         val type = intent.getStringExtra("reminderType") ?: if (intent.action == TaskReminderScheduler.ACTION_ALARM) "alarm" else "notification"
+        if (type == "alarm") {
+            val alarm = Intent(context, TaskAlarmService::class.java).putExtra("title", title)
+            runCatching { if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(alarm) else context.startService(alarm) }
+            return
+        }
         val manager = context.getSystemService(NotificationManager::class.java)
         val channelId = if (type == "alarm") ALARM_CHANNEL else NOTIFICATION_CHANNEL
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && manager.getNotificationChannel(channelId) == null) {
@@ -223,9 +241,11 @@ class ClassReminderReceiver : BroadcastReceiver() {
         }
         val manager = context.getSystemService(NotificationManager::class.java)
         if (Build.VERSION.SDK_INT >= 26 && manager.getNotificationChannel(CHANNEL) == null) {
-            manager.createNotificationChannel(NotificationChannel(CHANNEL, "Class reminders", NotificationManager.IMPORTANCE_HIGH).apply {
+            manager.createNotificationChannel(NotificationChannel(CHANNEL, "Class reminders and attendance", NotificationManager.IMPORTANCE_HIGH).apply {
                 description = "Beep when a class starts and remind you after class"
                 enableVibration(true)
+                vibrationPattern = longArrayOf(0, 500, 250, 500)
+                setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION), AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
             })
         }
         val open = PendingIntent.getActivity(context, 0, Intent(context, MainActivity::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
@@ -249,7 +269,7 @@ class ClassReminderReceiver : BroadcastReceiver() {
         ClassReminderScheduler.reschedule(context, id)
     }
 
-    companion object { private const val CHANNEL = "aura_class_reminders" }
+    companion object { private const val CHANNEL = "aura_class_reminders_v2" }
 }
 
 class ClassReminderBootReceiver : BroadcastReceiver() {
