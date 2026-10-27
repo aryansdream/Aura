@@ -1,0 +1,46 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widgetRoot"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/aura_widget_background"
+    android:clickable="true"
+    android:focusable="true"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="A U R A   ∞"
+        android:textColor="#B5A9FF"
+        android:textSize="12sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/widgetPoints"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="3dp"
+        android:text="∞"
+        android:textColor="#F4F2FC"
+        android:textSize="30sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/widgetStreak"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Your Aura points"
+        android:textColor="#B8BAC7"
+        android:textSize="12sp" />
+
+    <TextView
+        android:id="@+id/widgetHint"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="TAP TO OPEN AURA"
+        android:textColor="#8F87CA"
+        android:textSize="9sp"
+        android:textStyle="bold" />
+</LinearLayout>

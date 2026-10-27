@@ -78,8 +78,10 @@ class MainActivity : ComponentActivity() {
         val prefs = getSharedPreferences("aura_native", MODE_PRIVATE)
         // Screen-off is the one background case where the timer must keep running.
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-            if (power.isInteractive && prefs.getBoolean("focus_running", false)) stopService(Intent(this, FocusService::class.java))
-        }, 700)
+            if (power.isInteractive && prefs.getBoolean("focus_running", false) && FocusAppPolicy.shouldEndFocus(this)) {
+                stopService(Intent(this, FocusService::class.java))
+            }
+        }, 900)
     }
 }
 
@@ -117,6 +119,7 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
                     AuraApi.request(context, "/api/me") to AuraApi.request(context, "/api/planner")
                 }
                 account = me; user = me.optJSONObject("user"); planner = plan.optJSONObject("data") ?: JSONObject()
+                AuraWidgetProvider.sync(context, me)
                 context.getSharedPreferences("aura_native", 0).edit().putString("planner_cache", planner.toString()).apply()
                 ClassReminderScheduler.sync(context, planner)
                 val health = planner.optJSONArray("lifestyle")?.lastObjectForDay(LocalDate.now().toString())
@@ -261,7 +264,7 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
         if (isRunning) {
             Text(context.getSharedPreferences("aura_native", 0).getString("focus_subject", "Study session").orEmpty(), color = Muted)
             Button(onClick = stop, modifier = Modifier.fillMaxWidth().padding(top = 25.dp)) { Text("End focus") }
-            Text("Timer continues while your screen is off.", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 12.dp))
+            Text("Timer continues with the screen off. ChatGPT, Gemini, YouTube, and other non-social apps are allowed; focus ends if you open social media or go home. Usage Access is needed.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp, modifier = Modifier.padding(top = 12.dp))
         } else {
             Text("Choose a subject", color = Muted, modifier = Modifier.align(Alignment.Start))
             var expanded by remember { mutableStateOf(false) }
@@ -276,7 +279,7 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
                 IconButton(onClick = { setMinutes((minutes + 5).coerceAtMost(180)) }) { Icon(Icons.Default.Add, "Longer") }
             }
             Button(onClick = { subjectList.firstOrNull { it.optString("id") == selected }?.let { start(selected, it.optString("name"), minutes) } }, enabled = selected.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Start focus session") }
-            Text("AURA remains in a native background timer with a notification.", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 12.dp))
+            Text("AURA runs a native timer with a notification. ChatGPT, Gemini, YouTube, and other non-social apps are allowed during focus. Usage Access is needed to detect social apps and the home screen.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp, modifier = Modifier.padding(top = 12.dp))
         }
     }
 }
@@ -426,7 +429,7 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
             LinkRow("Personal Instagram", "@aryant1wari", "https://www.instagram.com/aryant1wari/", context)
             LinkRow("Email", "aryantiwari90605@gmail.com", "mailto:aryantiwari90605@gmail.com", context)
         } }
-        item { InfoCard("Device features", "The native focus timer continues with the screen off and stops when you leave the app while the display stays on. Steps and screen time can sync after Health Connect and Usage Access are connected. Calories can be logged in Life.") }
+        item { InfoCard("Device features", "Add the AURA points and day-streak widget from your Android home screen: long-press the home screen, choose Widgets, then select AURA. The focus timer continues with the screen off. ChatGPT, Gemini, YouTube, and other non-social apps are allowed during focus; opening social media or the home screen ends the timer. Usage Access enables this app-switch check and screen-time sync. Steps sync through Health Connect, and calories can be logged in Life.") }
     }
 }
 
