@@ -69,14 +69,16 @@ class TaskAlarmService : Service() {
         stopSoundAndVibration()
         val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
             ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-            ?: return
-        runCatching {
-            player = MediaPlayer().apply {
-                setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
-                setDataSource(this@TaskAlarmService, uri)
-                isLooping = true
-                prepare()
-                start()
+            ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+        if (uri != null) {
+            runCatching {
+                player = MediaPlayer().apply {
+                    setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
+                    setDataSource(this@TaskAlarmService, uri)
+                    isLooping = true
+                    prepare()
+                    start()
+                }
             }
         }
         vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {

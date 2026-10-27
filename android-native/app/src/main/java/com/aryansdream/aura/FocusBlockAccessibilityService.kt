@@ -21,6 +21,7 @@ import android.view.ViewGroup
 class FocusBlockAccessibilityService : AccessibilityService() {
     private var blocker: View? = null
     private val handler = Handler(Looper.getMainLooper())
+    private var lastForegroundPackage: String? = null
     private val checkActive = object : Runnable {
         override fun run() {
             val prefs = getSharedPreferences("aura_native", MODE_PRIVATE)
@@ -31,7 +32,9 @@ class FocusBlockAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         serviceInfo = AccessibilityServiceInfo().apply {
-            eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or AccessibilityEvent.TYPE_WINDOWS_CHANGED
+            // TYPE_WINDOWS_CHANGED fires when our own overlay is added/removed. Treating that
+            // event as a foreground-app change made the blocker repeatedly hide and reappear.
+            eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
             feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
             notificationTimeout = 80
             flags = 0
@@ -42,7 +45,14 @@ class FocusBlockAccessibilityService : AccessibilityService() {
         val prefs = getSharedPreferences("aura_native", MODE_PRIVATE)
         val active = prefs.getBoolean("focus_running", false) && prefs.getBoolean("block_social_apps", false)
         if (!active) { hideBlocker(); return }
-        if (FocusAppPolicy.isDistracting(event?.packageName?.toString())) showBlocker() else hideBlocker()
+        if (event?.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
+        val foregroundPackage = event.packageName?.toString()?.takeIf { it.isNotBlank() } ?: return
+        // Adding the accessibility overlay generates AURA's own window event. Ignore it so
+        // the overlay stays mounted until a real app switch occurs.
+        if (foregroundPackage == packageName && blocker != null) return
+        if (foregroundPackage == lastForegroundPackage) return
+        lastForegroundPackage = foregroundPackage
+        if (FocusAppPolicy.isDistracting(foregroundPackage)) showBlocker() else hideBlocker()
     }
 
     override fun onInterrupt() = hideBlocker()
