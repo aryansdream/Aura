@@ -1,7 +1,7 @@
 {
   "versionCode": 17,
   "versionName": "1.2.1",
-  "apkUrl": "https://aura-day-tracker.vercel.app/aura-android.apk",
+  "apkUrl": "https://aura-day-tracker.vercel.app/aura-android-1.2.1.apk",
   "sha256": "516d914a90750f15e7a37532e81513fe1e359b687a26470fb456b2bfdaa2c7dc",
   "releaseNotes": "Removes Accessibility-based app blocking, adds social app detection, and uses a non-debuggable APK."
 }

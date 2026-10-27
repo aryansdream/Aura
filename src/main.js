@@ -14,6 +14,10 @@ function applyTheme(theme) {
 applyTheme(localStorage.getItem(THEME_KEY) || 'dark');
 fetch('/aura-update.json', { cache: 'no-store' }).then((response) => response.ok ? response.json() : null).then((release) => {
   if (release?.versionName && $('androidAppVersionLabel')) $('androidAppVersionLabel').textContent = `Native app · version ${release.versionName}`;
+  if (release?.apkUrl && $('androidApkDownload')) {
+    $('androidApkDownload').href = release.apkUrl;
+    if (release.versionName) $('androidApkDownload').download = `AURA-Android-${release.versionName}.apk`;
+  }
 }).catch(() => {});
 $('themeToggle').addEventListener('click', () => { const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; localStorage.setItem(THEME_KEY, next); applyTheme(next); });
 const checklistShortcut = new URLSearchParams(location.search).get('widget') === 'checklist';
