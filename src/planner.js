@@ -15,6 +15,8 @@ const dateLabel = value => value ? new Date(`${value.slice(0, 10)}T12:00:00`).to
 export function initPlanner(api, getAccount) {
   const get = id => document.getElementById(id);
   let pendingDelete = null;
+  let editingScheduleId = null;
+  let editingSubjectId = null;
   const deleteDialog = get('deleteConfirmDialog');
   function confirmDelete(label, action) {
     get('deleteConfirmTitle').textContent = `Delete “${label}”?`;
@@ -96,7 +98,7 @@ export function initPlanner(api, getAccount) {
     if (!scheduleSelectedDate) scheduleSelectedDate = todayDate;
     const selected = new Date(`${scheduleSelectedDate}T12:00:00`), selectedDay = selected.getDay();
     const selectedItems = plannedOn(scheduleSelectedDate).sort((a,b) => a.start.localeCompare(b.start));
-    const itemHtml = (item, compact = false) => `<div class="schedule-item${compact ? ' is-compact' : ''}" style="--subject:${subjectColor(item.subjectId)}"><span class="schedule-time">${esc(item.start)}–${esc(item.end)}</span><b>${esc(item.title)}</b>${compact ? '' : `<small>${esc(subjectName(item.subjectId))}${item.kind ? ` · ${esc(item.kind)}` : ''}</small><button type="button" class="icon-button" data-remove-schedule="${esc(item.id)}" aria-label="Remove ${esc(item.title)}">×</button>`}</div>`;
+    const itemHtml = (item, compact = false) => `<div class="schedule-item${compact ? ' is-compact' : ''}" style="--subject:${subjectColor(item.subjectId)}"><span class="schedule-time">${esc(item.start)}–${esc(item.end)}</span><b>${esc(item.title)}</b>${compact ? '' : `<small>${esc(subjectName(item.subjectId))}${item.kind ? ` · ${esc(item.kind)}` : ''}</small><span class="schedule-actions"><button type="button" class="icon-button" data-edit-schedule="${esc(item.id)}" aria-label="Edit ${esc(item.title)}" title="Edit routine">✎</button><button type="button" class="icon-button" data-remove-schedule="${esc(item.id)}" aria-label="Remove ${esc(item.title)}" title="Remove routine">×</button></span>`}</div>`;
     const todayHtml = `<div class="schedule-featured-card"><div class="schedule-day-name">${scheduleSelectedDate === todayDate ? 'Today' : week[selectedDay]}<span>${dateLabel(scheduleSelectedDate)}</span></div>${selectedItems.length ? selectedItems.map(item => itemHtml(item)).join('') : '<div class="schedule-empty">Nothing planned</div>'}</div>`;
     const sunday = new Date(selected); sunday.setDate(sunday.getDate() - selectedDay);
     const weekHtml = week.map((day, index) => {
@@ -123,7 +125,7 @@ export function initPlanner(api, getAccount) {
       const daily = week.map(date => logs.filter(log => log.date === date).reduce((sum, log) => sum + Number(log.minutes || 0), 0));
       const max = Math.max(30, ...daily);
       const chart = `<div class="subject-mini-chart" role="img" aria-label="${esc(subject.name)} study minutes over the last seven days">${daily.map((minutes, i) => `<span class="subject-mini-day" title="${dateLabel(week[i])}: ${minutes} min"><i style="height:${minutes ? Math.max(5, Math.round(minutes/max*100)) : 2}%;background:${esc(subject.color)}"></i><small>${new Date(`${week[i]}T12:00:00`).toLocaleDateString(undefined,{weekday:'narrow'})}</small></span>`).join('')}</div>`;
-      return `<article class="subject-card" style="--subject:${esc(subject.color)}"><div class="subject-card-top"><span class="subject-dot"></span><h3>${esc(subject.name)}</h3><button class="icon-button" type="button" data-remove-subject="${esc(subject.id)}" aria-label="Remove ${esc(subject.name)}">×</button></div>${subject.teacher ? `<p>${esc(subject.teacher)}</p>` : ''}<div class="subject-stats"><span><b>${hours.toFixed(1)}</b> study hours</span><span><b>${logs.length}</b> sessions</span><span><b>${tests.length}</b> upcoming tests</span></div><div class="subject-chart-label">STUDY TIME · 7 DAYS</div>${chart}${tests.slice(0,2).map(test => `<div class="subject-test"><span>${esc(test.title)}</span><b>${dateLabel(test.deadline)}</b></div>`).join('')}${subject.notes ? `<p class="subject-notes">${esc(subject.notes)}</p>` : ''}</article>`;
+      return `<article class="subject-card" style="--subject:${esc(subject.color)}"><div class="subject-card-top"><span class="subject-dot"></span><h3>${esc(subject.name)}</h3><div class="subject-actions"><button class="icon-button" type="button" data-edit-subject="${esc(subject.id)}" aria-label="Edit ${esc(subject.name)}" title="Edit subject">✎</button><button class="icon-button" type="button" data-remove-subject="${esc(subject.id)}" aria-label="Remove ${esc(subject.name)}" title="Remove subject">×</button></div></div>${subject.teacher ? `<p>${esc(subject.teacher)}</p>` : ''}<div class="subject-stats"><span><b>${hours.toFixed(1)}</b> study hours</span><span><b>${logs.length}</b> sessions</span><span><b>${tests.length}</b> upcoming tests</span></div><div class="subject-chart-label">STUDY TIME · 7 DAYS</div>${chart}${tests.slice(0,2).map(test => `<div class="subject-test"><span>${esc(test.title)}</span><b>${dateLabel(test.deadline)}</b></div>`).join('')}${subject.notes ? `<p class="subject-notes">${esc(subject.notes)}</p>` : ''}</article>`;
     }).join('') : '<div class="planner-empty">Add your first subject to bring classes, study time, and test dates together.</div>';
     fillSubjectSelect(get('taskSubject'));
     fillSubjectSelect(get('studySubject'), false);
@@ -313,12 +315,27 @@ export function initPlanner(api, getAccount) {
   }
   get('scheduleForm').addEventListener('submit', event => {
     event.preventDefault(); const title = get('scheduleTitle').value.trim();
-    if (!title || !get('scheduleDays').querySelectorAll('input:checked').length) return toast('Choose an activity and at least one day.');
+    const days = [...get('scheduleDays').querySelectorAll('input:checked')].map(input => Number(input.value));
+    const existing = data.schedule.find(item => item.id === editingScheduleId);
+    if (!title || (!days.length && !(existing && existing.date))) return toast('Choose an activity and at least one day.');
     const start = get('scheduleStart').value, end = get('scheduleEnd').value;
     if (end <= start) return toast('The end time must come after the start time.');
-    data.schedule.push({ id: id(), title, subjectId: get('scheduleSubject').value, days: [...get('scheduleDays').querySelectorAll('input:checked')].map(input => Number(input.value)), start, end, kind: get('scheduleKind').value });
-    event.currentTarget.reset(); persist(renderSchedule); checkReminders(); toast('Added to your weekly timetable');
+    const values = { title, subjectId: get('scheduleSubject').value, days: existing?.date ? existing.days : days, start, end, kind: get('scheduleKind').value };
+    if (existing) Object.assign(existing, values);
+    else data.schedule.push({ id: id(), ...values });
+    const wasEditing = Boolean(existing); editingScheduleId = null;
+    event.currentTarget.reset(); get('scheduleSubmit').textContent = 'Add to timetable'; get('scheduleCancelEdit').hidden = true;
+    persist(renderSchedule); checkReminders(); toast(wasEditing ? 'Routine updated' : 'Added to your weekly timetable');
   });
+  function editScheduleEntry(event) {
+    const button = event.target.closest('[data-edit-schedule]'); if (!button) return;
+    const item = data.schedule.find(entry => entry.id === button.dataset.editSchedule); if (!item) return;
+    editingScheduleId = item.id; get('scheduleTitle').value = item.title; get('scheduleSubject').value = item.subjectId || '';
+    get('scheduleKind').value = item.kind || 'Class'; get('scheduleStart').value = item.start; get('scheduleEnd').value = item.end;
+    get('scheduleDays').querySelectorAll('input').forEach(input => { input.checked = item.days.includes(Number(input.value)); });
+    get('scheduleSubmit').textContent = 'Save routine'; get('scheduleCancelEdit').hidden = false; get('scheduleForm').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+  get('scheduleCancelEdit').addEventListener('click', () => { editingScheduleId = null; get('scheduleForm').reset(); get('scheduleSubmit').textContent = 'Add to timetable'; get('scheduleCancelEdit').hidden = true; });
   function removeScheduleEntry(event) {
     const button = event.target.closest('[data-remove-schedule]');
     if (!button) return;
@@ -331,9 +348,10 @@ export function initPlanner(api, getAccount) {
   get('scheduleWeek').addEventListener('click', event => {
     const day = event.target.closest('[data-select-date]');
     if (day) { scheduleSelectedDate = day.dataset.selectDate; renderSchedule(); return; }
+    editScheduleEntry(event);
     removeScheduleEntry(event);
   });
-  get('scheduleToday').addEventListener('click', removeScheduleEntry);
+  get('scheduleToday').addEventListener('click', event => { editScheduleEntry(event); removeScheduleEntry(event); });
   get('scheduleDateSelect').addEventListener('change', event => { scheduleSelectedDate = event.target.value || appDate(); renderSchedule(); });
   const moveScheduleDate = offset => { const date = new Date(`${scheduleSelectedDate || appDate()}T12:00:00`); date.setDate(date.getDate() + offset); scheduleSelectedDate = localDate(date); renderSchedule(); };
   get('schedulePrevDate').addEventListener('click', () => moveScheduleDate(-1));
@@ -341,10 +359,22 @@ export function initPlanner(api, getAccount) {
   get('scheduleTodayDate').addEventListener('click', () => { scheduleSelectedDate = appDate(); renderSchedule(); });
   get('subjectForm').addEventListener('submit', event => {
     event.preventDefault(); const name = get('subjectName').value.trim(); if (!name) return;
-    data.subjects.push({ id: id(), name, color: get('subjectColor').value, teacher: get('subjectTeacher').value.trim(), notes: get('subjectNotes').value.trim() });
-    event.currentTarget.reset(); get('subjectColor').value = '#8b7cf6'; persist(); toast(`${name} added to your subjects`);
+    const subject = data.subjects.find(item => item.id === editingSubjectId);
+    const values = { name, color: get('subjectColor').value, teacher: get('subjectTeacher').value.trim(), notes: get('subjectNotes').value.trim() };
+    if (subject) Object.assign(subject, values); else data.subjects.push({ id: id(), ...values });
+    const wasEditing = Boolean(subject); editingSubjectId = null;
+    event.currentTarget.reset(); get('subjectColor').value = '#8b7cf6'; get('subjectFormTitle').textContent = 'Add a subject'; get('subjectSubmit').textContent = 'Add subject'; get('subjectCancelEdit').hidden = true;
+    persist(); toast(wasEditing ? `${name} updated` : `${name} added to your subjects`);
   });
   get('subjectList').addEventListener('click', event => {
+    const editButton = event.target.closest('[data-edit-subject]');
+    if (editButton) {
+      const subject = data.subjects.find(item => item.id === editButton.dataset.editSubject); if (!subject) return;
+      editingSubjectId = subject.id; get('subjectName').value = subject.name; get('subjectTeacher').value = subject.teacher || '';
+      get('subjectNotes').value = subject.notes || ''; get('subjectColor').value = subject.color || '#8b7cf6';
+      get('subjectFormTitle').textContent = `Edit ${subject.name}`; get('subjectSubmit').textContent = 'Save subject'; get('subjectCancelEdit').hidden = false;
+      get('subjectForm').scrollIntoView({ behavior: 'smooth', block: 'center' }); return;
+    }
     const button = event.target.closest('[data-remove-subject]'); if (!button) return;
     const subject = data.subjects.find(item => item.id === button.dataset.removeSubject);
     confirmDelete(subject?.name || 'this subject', () => {
@@ -352,6 +382,7 @@ export function initPlanner(api, getAccount) {
       persist();
     });
   });
+  get('subjectCancelEdit').addEventListener('click', () => { editingSubjectId = null; get('subjectForm').reset(); get('subjectColor').value = '#8b7cf6'; get('subjectFormTitle').textContent = 'Add a subject'; get('subjectSubmit').textContent = 'Add subject'; get('subjectCancelEdit').hidden = true; });
   get('taskReminder').addEventListener('change', () => { const custom = get('taskReminder').value === 'custom'; get('taskReminderCustom').hidden = !custom; if (custom && !get('taskReminderCustom').value) get('taskReminderCustom').value = '2'; });
   get('taskForm').addEventListener('submit', event => {
     event.preventDefault(); const title = get('taskTitle').value.trim(); if (!title) return;
