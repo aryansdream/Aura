@@ -27,5 +27,5 @@ Increment `versionCode` and `versionName` in `app/build.gradle.kts`, build the A
 - No preset mission catalog or Life section.
 - A native Android home-screen widget for Aura Points and day streak.
 - A More page with the community leaderboard and AURA information/contact links.
-- Social app detection during focus. ChatGPT, Gemini, YouTube and other non-social apps remain allowed; opening a social app or the home screen ends focus. Usage Access is required for app-switch detection.
+- Social app detection during focus. Opening a selected social app or the home screen ends focus; ChatGPT, Gemini, YouTube and other non-social apps remain allowed. Usage Access is required for app-switch detection. AURA no longer uses Accessibility to cover social apps.
 - Dark native interface with the infinity AURA logo and “Aura-Coz you need it!” tagline.

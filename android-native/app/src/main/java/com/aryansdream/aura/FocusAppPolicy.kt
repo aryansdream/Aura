@@ -17,11 +17,15 @@ object FocusAppPolicy {
 
     fun isDistracting(packageName: String?): Boolean = packageName != null && packageName in distractingPackages
 
+    fun hasUsageAccess(context: Context): Boolean {
+        val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
+        return appOps.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), context.packageName) == AppOpsManager.MODE_ALLOWED
+    }
+
     fun shouldEndFocus(context: Context): Boolean {
         // Without Usage Access Android has not told us which app is foregrounded;
         // preserve the timer instead of treating an unknown app as a violation.
-        val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
-        if (appOps.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), context.packageName) != AppOpsManager.MODE_ALLOWED) return false
+        if (!hasUsageAccess(context)) return false
         val manager = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
         val now = System.currentTimeMillis()
         val events = manager.queryEvents(now - 15_000L, now)
@@ -39,8 +43,6 @@ object FocusAppPolicy {
         val homePackage = context.packageManager.resolveActivity(
             Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME), 0
         )?.activityInfo?.packageName
-        val distracting = isDistracting(foreground)
-        val socialBlockerEnabled = FocusBlockAccessibilityService.isEnabled(context)
-        return foreground == context.packageName || foreground == homePackage || (distracting && !socialBlockerEnabled)
+        return foreground == context.packageName || foreground == homePackage || isDistracting(foreground)
     }
 }

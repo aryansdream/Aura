@@ -426,12 +426,12 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                 IconButton(onClick = { setMinutes((minutes + 5).coerceAtMost(180)) }) { Icon(Icons.Default.Add, "Longer") }
             }
             Button(onClick = { subjectList.firstOrNull { it.optString("id") == selected }?.let { start(selected, it.optString("name"), minutes) } }, enabled = selected.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Start focus session") }
-            val blockerEnabled = FocusBlockAccessibilityService.isEnabled(context)
+            val usageAccessEnabled = FocusAppPolicy.hasUsageAccess(context)
             Card(Modifier.fillMaxWidth().padding(top = 12.dp), colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) {
                 Column(Modifier.fillMaxWidth().padding(14.dp)) {
-                    Text(if (blockerEnabled) "Social app blocker is on" else "Turn on social app blocking", fontWeight = FontWeight.SemiBold)
-                    Text(if (blockerEnabled) "Instagram and other selected social apps are covered while Focus is active." else "Android needs you to enable AURA in Accessibility settings before social apps can be blocked.", color = Muted, fontSize = 11.sp, lineHeight = 15.sp, modifier = Modifier.padding(top = 4.dp))
-                    if (!blockerEnabled) TextButton(onClick = { runCatching { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) } }) { Text("Open Accessibility settings") }
+                    Text(if (usageAccessEnabled) "Social app detection is ready" else "Enable app-switch detection", fontWeight = FontWeight.SemiBold)
+                    Text("When Focus runs, opening a selected social app or the home screen ends the timer. AURA does not cover or block apps.", color = Muted, fontSize = 11.sp, lineHeight = 15.sp, modifier = Modifier.padding(top = 4.dp))
+                    if (!usageAccessEnabled) TextButton(onClick = { runCatching { context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) } }) { Text("Open Usage Access settings") }
                 }
             }
             val notificationBlockerEnabled = FocusNotificationListener.isEnabled(context)
@@ -442,7 +442,7 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                     if (!notificationBlockerEnabled) TextButton(onClick = { runCatching { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) } }) { Text("Open Notification access settings") }
                 }
             }
-            Text("ChatGPT, Gemini, YouTube, and other non-social apps stay available during Focus. AURA uses Accessibility to cover selected social apps and Notification access to dismiss their alerts while a session is active.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp, modifier = Modifier.padding(top = 8.dp))
+            Text("ChatGPT, Gemini, YouTube, and other non-social apps stay available during Focus. Opening a selected social app or the home screen ends the focus timer. Usage Access is required to detect app switches. Notification access is optional and can mute social app alerts while Focus is active.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp, modifier = Modifier.padding(top = 8.dp))
         }
     }
 }
@@ -788,7 +788,7 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
             LinkRow("Personal Instagram", "@aryant1wari", "https://www.instagram.com/aryant1wari/", context)
             LinkRow("Email", "aryantiwari90605@gmail.com", "mailto:aryantiwari90605@gmail.com", context)
         } }
-        item { InfoCard("Device features", "Add the AURA points and day-streak widget from your Android home screen: long-press the home screen, choose Widgets, then select AURA. The focus timer continues with the screen off. ChatGPT, Gemini and YouTube stay available. Enable AURA in Accessibility and Notification access settings to cover social apps and mute their alerts while Focus runs. Scheduled task alarms and notifications are set in the Tasks tab. Android may ask for notification permission; exact Notification reminders may also require Alarms & reminders access. Alarms use Android’s alarm service and can ring while AURA is closed.") }
+        item { InfoCard("Device features", "Add the AURA points and day-streak widget from your Android home screen: long-press the home screen, choose Widgets, then select AURA. The focus timer continues with the screen off. ChatGPT, Gemini and YouTube stay available; opening selected social apps or the home screen ends Focus. Usage Access enables app-switch detection. Notification access is optional for silencing social alerts during Focus. Scheduled task alarms and notifications are set in the Tasks tab. Android may ask for notification permission; exact Notification reminders may also require Alarms & reminders access. Alarms use Android’s alarm service and can ring while AURA is closed.") }
         item { InfoCard("App updates", "Installed version $installedVersion. Check here for new AURA versions and install them without leaving the app. Android will ask you to confirm each installation.") {
             Button(onClick = onUpdate, modifier = Modifier.fillMaxWidth().padding(top = 12.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF55459B))) {
                 Icon(Icons.Default.SystemUpdateAlt, contentDescription = null, modifier = Modifier.size(18.dp))

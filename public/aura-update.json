@@ -1,7 +1,7 @@
 {
-  "versionCode": 15,
-  "versionName": "1.1.9",
+  "versionCode": 16,
+  "versionName": "1.2.0",
   "apkUrl": "https://aura-day-tracker.vercel.app/aura-android.apk",
-  "sha256": "06138f49abd9bc209276420ed250117c2dcb0d7dd96ab0b9e4e821b782e7be0f",
-  "releaseNotes": "Adds in-app update checking and installation."
+  "sha256": "87b4f074ae8d9a37576d1611e7d83c2c96924897738c5d3bb3ebdad158324d3e",
+  "releaseNotes": "Removes Accessibility-based app blocking. Focus ends when a selected social app is opened."
 }
