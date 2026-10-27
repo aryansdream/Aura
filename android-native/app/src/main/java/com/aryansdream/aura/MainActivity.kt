@@ -13,6 +13,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.NotificationManagerCompat
+import androidx.lifecycle.lifecycleScope
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
@@ -64,10 +65,14 @@ private val Purple = Color(0xFFB5A9FF)
 private val Muted = Color(0xFFA3A6B5)
 
 class MainActivity : ComponentActivity() {
-    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) lifecycleScope.launch { withContext(Dispatchers.IO) { runCatching { AppUpdater.checkAndNotify(this@MainActivity) } } }
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (Build.VERSION.SDK_INT >= 33) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        AppUpdateScheduler.schedule(this)
+        lifecycleScope.launch { withContext(Dispatchers.IO) { runCatching { AppUpdater.checkAndNotify(this@MainActivity) } } }
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(primary = Purple, background = Night, surface = Surface, onBackground = Color(0xFFF4F2FC), onSurface = Color(0xFFF4F2FC), secondary = Color(0xFF83D6C4))) {
                 AuraApp(
@@ -253,29 +258,6 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                         withContext(Dispatchers.IO) { AuraApi.signOut(context) }
                         account = null; user = null; planner = JSONObject(); leaderboard = JSONArray()
                         error = ""; busy = false
-                    }
-                }, onUpdate = {
-                    scope.launch {
-                        busy = true
-                        syncMessage = "Checking for AURA updates…"
-                        try {
-                            val releaseAndFile = withContext(Dispatchers.IO) {
-                                val release = AppUpdater.latestRelease()
-                                if (release.versionCode <= AppUpdater.installedVersionCode(context)) null
-                                else release to AppUpdater.download(context, release)
-                            }
-                            if (releaseAndFile == null) {
-                                syncMessage = "AURA is up to date."
-                            } else if (Build.VERSION.SDK_INT >= 26 && !context.packageManager.canRequestPackageInstalls()) {
-                                syncMessage = "Update downloaded. Allow AURA to install updates, then tap Check again."
-                                runCatching { context.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, android.net.Uri.parse("package:${context.packageName}"))) }
-                            } else {
-                                syncMessage = "Opening Android installer for AURA ${releaseAndFile.first.versionName}…"
-                                context.startActivity(AppUpdater.installerIntent(context, releaseAndFile.second))
-                            }
-                        } catch (e: Exception) {
-                            syncMessage = e.message ?: "Could not check for updates. Try again later."
-                        } finally { busy = false }
                     }
                 })
             }
@@ -774,7 +756,7 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
     }
 }
 
-@Composable private fun InfoPage(onSignOut: () -> Unit, onUpdate: () -> Unit) {
+@Composable private fun InfoPage(onSignOut: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val installedVersion = remember { context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "" }
     val atmosphere = rememberInfiniteTransition(label = "info atmosphere")
@@ -800,12 +782,7 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
             LinkRow("Email", "aryantiwari90605@gmail.com", "mailto:aryantiwari90605@gmail.com", context)
         } }
         item { InfoCard("Device features", "Add the AURA points and day-streak widget from your Android home screen: long-press the home screen, choose Widgets, then select AURA. The focus timer runs while you switch apps or turn off the screen; AURA does not track app usage. Choose a water reminder interval before starting Focus. Social notification muting is optional. Scheduled task alarms and notifications are set in the Tasks tab. Android may ask for notification permission; exact task reminders may also require Alarms & reminders access. Alarms use Android’s alarm service and can ring while AURA is closed.") }
-        item { InfoCard("App updates", "Installed version $installedVersion. Check here for new AURA versions and install them without leaving the app. Android will ask you to confirm each installation.") {
-            Button(onClick = onUpdate, modifier = Modifier.fillMaxWidth().padding(top = 12.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF55459B))) {
-                Icon(Icons.Default.SystemUpdateAlt, contentDescription = null, modifier = Modifier.size(18.dp))
-                Text("  Check for updates")
-            }
-        } }
+        item { InfoCard("App updates", "Installed version $installedVersion. AURA checks when you open the app and about every 12 hours when a network is available. It notifies you once when a newer release appears. Tap the notification to download the APK in your browser, then install it through Android.") }
         item { InfoCard("Account", "Your sign-in stays saved on this device. Use Sign out only when you want to remove this account from the app.") {
             Button(onClick = onSignOut, modifier = Modifier.fillMaxWidth().padding(top = 12.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF392832))) { Text("Sign out of AURA") }
         } }

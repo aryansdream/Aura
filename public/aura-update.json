@@ -1,7 +1,7 @@
 {
-  "versionCode": 18,
-  "versionName": "1.2.2",
-  "apkUrl": "https://aura-day-tracker.vercel.app/aura-android-1.2.2.apk",
-  "sha256": "d5bd1bd80be206cbced3b4082894fc8abd25456d38eb2ef6b57e3c97aef21e91",
-  "releaseNotes": "Adds subject attendance calculations and in-app updates, plus configurable animated water reminders during focus. Focus no longer monitors which apps are open."
+  "versionCode": 19,
+  "versionName": "1.2.3",
+  "apkUrl": "https://aura-day-tracker.vercel.app/aura-android-1.2.3.apk",
+  "sha256": "06ae86aab343afdfed553db9db2cbdafbe0839e8193771a6efecd5ecac0d617d",
+  "releaseNotes": "Notifies you when a new AURA version is released. APK installation now stays in Android's normal download and install flow."
 }
