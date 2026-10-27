@@ -12,6 +12,9 @@ function applyTheme(theme) {
   const meta = document.querySelector('meta[name="theme-color"]'); if (meta) meta.content = dark ? '#101116' : '#f4f5f8';
 }
 applyTheme(localStorage.getItem(THEME_KEY) || 'dark');
+fetch('/aura-update.json', { cache: 'no-store' }).then((response) => response.ok ? response.json() : null).then((release) => {
+  if (release?.versionName && $('androidAppVersionLabel')) $('androidAppVersionLabel').textContent = `Native app · version ${release.versionName}`;
+}).catch(() => {});
 $('themeToggle').addEventListener('click', () => { const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; localStorage.setItem(THEME_KEY, next); applyTheme(next); });
 const checklistShortcut = new URLSearchParams(location.search).get('widget') === 'checklist';
 if (checklistShortcut) {

@@ -12,8 +12,8 @@ android {
         applicationId = "com.aryansdream.aura"
         minSdk = 26
         targetSdk = 35
-        versionCode = 16
-        versionName = "1.2.0"
+        versionCode = 17
+        versionName = "1.2.1"
     }
 
     buildFeatures { compose = true }
@@ -22,6 +22,12 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+    buildTypes {
+        getByName("release") {
+            // Keep the existing install signature while publishing a non-debuggable APK.
+            signingConfig = signingConfigs.getByName("debug")
+        }
+    }
 }
 
 dependencies {

@@ -7,10 +7,10 @@ This is the native Android application. It uses Kotlin and Jetpack Compose; it d
 Use JDK 17 or newer, Android SDK Platform 36, and run:
 
 ```sh
-./gradlew assembleDebug
+./gradlew assembleRelease
 ```
 
-The installable debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
+The non-debuggable APK is written to `app/build/outputs/apk/release/app-release.apk`. To preserve upgrades for existing installs, the release variant is signed with the same local Android debug keystore used by prior versions. This keeps the existing app signature but is not Google Play Protect certification or a production signing identity.
 
 ## Publishing an in-app update
 
