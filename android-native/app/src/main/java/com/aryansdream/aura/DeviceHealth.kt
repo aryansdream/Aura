@@ -41,14 +41,13 @@ object DeviceHealth {
             val time = event.timeStamp.coerceIn(start, end)
             val wasActive = active.isNotEmpty() && screenInteractive
             when (event.eventType) {
-                UsageEvents.Event.SCREEN_NON_INTERACTIVE -> screenInteractive = false
+                UsageEvents.Event.SCREEN_NON_INTERACTIVE -> { screenInteractive = false; active.clear() }
                 UsageEvents.Event.SCREEN_INTERACTIVE -> screenInteractive = true
                 UsageEvents.Event.ACTIVITY_RESUMED -> { sawActivityEvents = true; active.add(event.packageName ?: "") }
                 UsageEvents.Event.ACTIVITY_PAUSED -> { sawActivityEvents = true; active.remove(event.packageName ?: "") }
                 UsageEvents.Event.MOVE_TO_FOREGROUND -> if (Build.VERSION.SDK_INT < 29) { sawActivityEvents = true; active.add(event.packageName ?: "") }
                 UsageEvents.Event.MOVE_TO_BACKGROUND -> if (Build.VERSION.SDK_INT < 29) { sawActivityEvents = true; active.remove(event.packageName ?: "") }
             }
-            val isActive = active.isNotEmpty() && screenInteractive
             if (wasActive) total += (time - last).coerceAtLeast(0)
             last = time
         }
