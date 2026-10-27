@@ -15,6 +15,10 @@
     {
       "source": "/aura-android-1.1.8.apk",
       "headers": [{ "key": "Cache-Control", "value": "no-store, max-age=0" }]
+    },
+    {
+      "source": "/aura-android-1.3.0-master.apk",
+      "headers": [{ "key": "Cache-Control", "value": "no-store, max-age=0" }]
     }
   ]
 }

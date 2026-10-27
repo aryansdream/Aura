@@ -13,10 +13,12 @@ function applyTheme(theme) {
 }
 applyTheme(localStorage.getItem(THEME_KEY) || 'dark');
 fetch('/aura-update.json', { cache: 'no-store' }).then((response) => response.ok ? response.json() : null).then((release) => {
-  if (release?.versionName && $('androidAppVersionLabel')) $('androidAppVersionLabel').textContent = `Native app · version ${release.versionName}`;
-  if (release?.apkUrl && $('androidApkDownload')) {
-    $('androidApkDownload').href = release.apkUrl;
-    if (release.versionName) $('androidApkDownload').download = `AURA-Android-${release.versionName}.apk`;
+  const defaultVersion = release?.defaultVersionName || release?.versionName;
+  const defaultApk = release?.defaultApkUrl || release?.apkUrl;
+  if (defaultVersion && $('androidAppVersionLabel')) $('androidAppVersionLabel').textContent = `Native app · version ${defaultVersion}`;
+  if (defaultApk && $('androidApkDownload')) {
+    $('androidApkDownload').href = defaultApk;
+    if (defaultVersion) $('androidApkDownload').download = `AURA-Android-${defaultVersion}.apk`;
   }
 }).catch(() => {});
 $('themeToggle').addEventListener('click', () => { const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; localStorage.setItem(THEME_KEY, next); applyTheme(next); });

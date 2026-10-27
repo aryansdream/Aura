@@ -1,3 +1,4 @@
 <resources>
     <string name="aura_widget_description">Show your AURA points and day streak</string>
+    <string name="aura_focus_blocker_description">During an active AURA focus session, cover selected social media apps so you can return to your study timer.</string>
 </resources>

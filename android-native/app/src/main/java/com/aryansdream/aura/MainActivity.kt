@@ -68,6 +68,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (Build.VERSION.SDK_INT >= 33) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        AppUpdateScheduler.schedule(this)
+        Thread { runCatching { AppUpdater.checkAndNotify(applicationContext) } }.start()
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(primary = Purple, background = Night, surface = Surface, onBackground = Color(0xFFF4F2FC), onSurface = Color(0xFFF4F2FC), secondary = Color(0xFF83D6C4))) {
                 AuraApp(
@@ -359,7 +361,26 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable private fun FocusPage(subjects: JSONArray, selected: String, select: (String) -> Unit, minutes: Int, setMinutes: (Int) -> Unit, deadline: Long, focusNow: Long, start: (String, String, Int) -> Unit, stop: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val isRunning = context.getSharedPreferences("aura_native", 0).getBoolean("focus_running", false)
+    val prefs = remember { context.getSharedPreferences("aura_native", 0) }
+    val isRunning = prefs.getBoolean("focus_running", false)
+    var waterInterval by remember { mutableIntStateOf(prefs.getInt("water_interval_minutes", 30).coerceIn(15, 90)) }
+    var blockApps by remember { mutableStateOf(prefs.getBoolean("block_social_apps", false)) }
+    var blockNotifications by remember { mutableStateOf(prefs.getBoolean("block_social_notifications", false)) }
+    var waterReminderCount by remember { mutableIntStateOf(prefs.getInt("water_reminder_count", 0)) }
+    var showWaterPrompt by remember { mutableStateOf(false) }
+    var accessibilityEnabled by remember { mutableStateOf(FocusBlockAccessibilityService.isEnabled(context)) }
+    var notificationListenerEnabled by remember { mutableStateOf(FocusNotificationListener.isEnabled(context)) }
+    LaunchedEffect(isRunning) {
+        var seenCount = prefs.getInt("water_reminder_count", 0)
+        waterReminderCount = seenCount
+        while (isRunning) {
+            delay(1000)
+            val latest = prefs.getInt("water_reminder_count", 0)
+            if (latest > seenCount) { seenCount = latest; waterReminderCount = latest; showWaterPrompt = true }
+            accessibilityEnabled = FocusBlockAccessibilityService.isEnabled(context)
+            notificationListenerEnabled = FocusNotificationListener.isEnabled(context)
+        }
+    }
     val remaining = ((deadline - focusNow).coerceAtLeast(0) / 1000).toInt()
     if (isRunning) {
         val clock = LocalDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm"))
@@ -394,8 +415,39 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                 IconButton(onClick = { setMinutes((minutes + 5).coerceAtMost(180)) }) { Icon(Icons.Default.Add, "Longer") }
             }
             Button(onClick = { subjectList.firstOrNull { it.optString("id") == selected }?.let { start(selected, it.optString("name"), minutes) } }, enabled = selected.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Start focus session") }
-            Text("AURA runs a native timer with a notification and does not monitor app usage during focus.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp, modifier = Modifier.padding(top = 12.dp))
+            Card(Modifier.fillMaxWidth().padding(top = 14.dp), colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(16.dp)) {
+                Column(Modifier.fillMaxWidth().padding(15.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Focus preferences", fontWeight = FontWeight.Bold)
+                    Text("Water reminder · every $waterInterval min", color = Purple, fontSize = 12.sp)
+                    Slider(value = waterInterval.toFloat(), onValueChange = { waterInterval = (it.toInt() / 5 * 5).coerceIn(15, 90); prefs.edit().putInt("water_interval_minutes", waterInterval).apply() }, valueRange = 15f..90f, steps = 14)
+                    Text("AURA shows an animated water break while open and a reminder notification when you’re away.", color = Muted, fontSize = 11.sp, lineHeight = 15.sp)
+                    HorizontalDivider(color = Muted.copy(alpha = .2f))
+                    Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("Block social apps", fontWeight = FontWeight.Medium); Text("Only while a focus session is active", color = Muted, fontSize = 10.sp) }; Switch(checked = blockApps, onCheckedChange = { blockApps = it; prefs.edit().putBoolean("block_social_apps", it).apply() }) }
+                    if (blockApps) {
+                        Text("Covers Instagram, TikTok, Facebook, Messenger, Snapchat, X, Threads, Reddit and Pinterest. ChatGPT, Gemini and YouTube remain available. AURA checks only the foreground app name through Android Accessibility while focus is active.", color = Muted, fontSize = 10.sp, lineHeight = 14.sp)
+                        if (!accessibilityEnabled) TextButton(onClick = { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) { Text("Enable AURA in Accessibility settings") }
+                    }
+                    HorizontalDivider(color = Muted.copy(alpha = .2f))
+                    Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("Block social app notifications", fontWeight = FontWeight.Medium); Text("Mute their alerts during focus", color = Muted, fontSize = 10.sp) }; Switch(checked = blockNotifications, onCheckedChange = { blockNotifications = it; prefs.edit().putBoolean("block_social_notifications", it).apply() }) }
+                    if (blockNotifications && !notificationListenerEnabled) TextButton(onClick = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }) { Text("Allow notification access") }
+                }
+            }
+            Text("The timer continues with the screen off. App blocking and notification blocking are optional and require their Android access to be enabled.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp, modifier = Modifier.padding(top = 10.dp))
         }
+    }
+    if (showWaterPrompt) AlertDialog(onDismissRequest = { showWaterPrompt = false }, title = { Text("Water break") }, text = { Column(horizontalAlignment = Alignment.CenterHorizontally) { AnimatedWaterGlass(); Text("Take a sip, then return to your focus session.", color = Muted, fontSize = 12.sp) } }, confirmButton = { TextButton(onClick = { showWaterPrompt = false }) { Text("Continue focus") } })
+}
+
+@Composable private fun AnimatedWaterGlass() {
+    val transition = rememberInfiniteTransition(label = "water ripple")
+    val fill by transition.animateFloat(0.38f, 0.68f, infiniteRepeatable(tween(1300, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "water fill")
+    Canvas(Modifier.size(100.dp)) {
+        val w = size.width; val h = size.height
+        val glass = Path().apply { moveTo(w * .25f, h * .12f); lineTo(w * .75f, h * .12f); lineTo(w * .66f, h * .88f); quadraticTo(w * .5f, h * .96f, w * .34f, h * .88f); close() }
+        drawPath(glass, Color(0xFFB5A9FF).copy(alpha = .22f))
+        drawRoundRect(Color(0xFF65C9D0), androidx.compose.ui.geometry.Offset(w * .3f, h * (1f - fill)), androidx.compose.ui.geometry.Size(w * .4f, h * (fill - .16f)), androidx.compose.ui.geometry.CornerRadius(15f))
+        drawPath(glass, Color(0xFFB5A9FF), style = Stroke(width = 4f))
+        drawCircle(Color.White.copy(alpha = .7f), w * .025f, androidx.compose.ui.geometry.Offset(w * .42f, h * .28f))
     }
 }
 
