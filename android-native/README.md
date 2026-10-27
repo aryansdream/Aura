@@ -21,5 +21,6 @@ The installable debug APK is written to `app/build/outputs/apk/debug/app-debug.a
 - Native editing for subject names, teacher names, colors, and repeating timetable entries.
 - Optional reminders for every scheduled activity, with a once-at-start alert or repeat intervals of 15 minutes, 30 minutes, 1 hour, or 2 hours.
 - A native Android home-screen widget for Aura Points and day streak.
+- The home screen includes the web timetable layout with date navigation, a week strip, and the selected day's scheduled blocks.
 - Focus sessions allow switching to apps outside common social media apps (including ChatGPT, Gemini, and YouTube); opening a social app or the home screen ends the session. Usage Access is required for this app-switch check.
 - Native dark interface, AURA information and contact links.

@@ -12,9 +12,11 @@ import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.PermissionController
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -37,6 +39,8 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.LocalDate
+import java.time.DayOfWeek
+import java.time.format.DateTimeFormatter
 
 private val Night = Color(0xFF11131A)
 private val Surface = Color(0xFF1B1E28)
@@ -183,7 +187,7 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
             }
             if (error.isNotBlank()) Text(error, Modifier.padding(horizontal = 20.dp), color = Color(0xFFFF8D8D), fontSize = 12.sp)
             when (page) {
-                "Today" -> HomePage(account, busy, showMissions, { showMissions = !showMissions; context.getSharedPreferences("aura_native", 0).edit().putBoolean("show_missions", showMissions).apply() }, onComplete = { id -> scope.launch { try { withContext(Dispatchers.IO) { AuraApi.request(context, "/api/complete", JSONObject().put("taskId", id)) }; load() } catch (e: Exception) { error = e.message ?: "Could not save." } } })
+                "Today" -> HomePage(account, planner, busy, showMissions, { showMissions = !showMissions; context.getSharedPreferences("aura_native", 0).edit().putBoolean("show_missions", showMissions).apply() }, onOpenStudy = { page = "Study" }, onComplete = { id -> scope.launch { try { withContext(Dispatchers.IO) { AuraApi.request(context, "/api/complete", JSONObject().put("taskId", id)) }; load() } catch (e: Exception) { error = e.message ?: "Could not save." } } })
                 "Focus" -> FocusPage(planner.optJSONArray("subjects") ?: JSONArray(), subjectChoice, { subjectChoice = it }, focusMinutes, { focusMinutes = it }, context.getSharedPreferences("aura_native", 0).getLong("focus_deadline", 0), focusNow, onStartFocus, onStopFocus)
                 "Study" -> StudyPage(planner) { next ->
                     planner = next
@@ -226,7 +230,7 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
     }
 }
 
-@Composable private fun HomePage(account: JSONObject?, busy: Boolean, showMissions: Boolean, toggleMissions: () -> Unit, onComplete: (String) -> Unit) {
+@Composable private fun HomePage(account: JSONObject?, planner: JSONObject, busy: Boolean, showMissions: Boolean, toggleMissions: () -> Unit, onOpenStudy: () -> Unit, onComplete: (String) -> Unit) {
     val stats = account?.optJSONObject("stats") ?: JSONObject()
     val missions = account?.optJSONArray("today") ?: JSONArray()
     val earnedDays = (0 until (account?.optJSONArray("days")?.length() ?: 0)).mapNotNull { account?.optJSONArray("days")?.optString(it) }.toSet()
@@ -236,6 +240,7 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(bottom = 24.dp)) {
         item { Text("TODAY · ${LocalDate.now()}", color = Muted, fontSize = 10.sp, letterSpacing = 1.5.sp) }
         item { Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(20.dp)) { Column(Modifier.fillMaxWidth().padding(20.dp)) { Text("YOUR AURA", color = Muted, fontSize = 10.sp, letterSpacing = 1.5.sp); Text(stats.optInt("total").toString(), fontSize = 42.sp, fontWeight = FontWeight.Black, color = Purple); Text("${stats.optInt("pending")} AP waiting for validation", color = Muted, fontSize = 12.sp); Spacer(Modifier.height(14.dp)); Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Metric("DAY STREAK", "$streak ∞"); Metric("COMPLETED", "${stats.optInt("completed")}") } } } }
+        item { HomeTimetable(planner, onOpenStudy) }
         item { Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { SectionTitle("Today's missions", if (showMissions) "${missions.length()} selected" else "Hidden from home") }; TextButton(onClick = toggleMissions) { Text(if (showMissions) "Hide" else "Show") } } }
         if (showMissions && missions.length() == 0) item { EmptyCard("Your daily missions will appear here after you add them on AURA.") }
         if (showMissions) items((0 until missions.length()).mapNotNull { missions.optJSONObject(it) }) { task ->
@@ -245,6 +250,65 @@ private fun AuraApp(healthSyncSignal: Int, onRequestSteps: () -> Unit, onUsageAc
                     if (task.optBoolean("done")) Text("DONE", color = Color(0xFF83D6C4), fontSize = 10.sp, fontWeight = FontWeight.Bold) else Button(onClick = { onComplete(task.optString("task_id")) }, enabled = !busy, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)) { Text("Done", fontSize = 11.sp) }
                 }
             }
+        }
+    }
+}
+
+@Composable private fun HomeTimetable(planner: JSONObject, onOpenStudy: () -> Unit) {
+    var selectedDate by remember { mutableStateOf(LocalDate.now()) }
+    val schedule = planner.optJSONArray("schedule") ?: JSONArray()
+    val subjects = planner.optJSONArray("subjects") ?: JSONArray()
+    val weekday = selectedDate.dayOfWeek.value % 7
+    val blocks = (0 until schedule.length()).mapNotNull { schedule.optJSONObject(it) }
+        .filter { entry ->
+            val specificDate = entry.optString("date") == selectedDate.toString()
+            val scheduledDays = entry.optJSONArray("days")
+            val repeatsToday = !entry.optBoolean("overrideWeekday") && (0 until (scheduledDays?.length() ?: 0)).any { scheduledDays?.optInt(it) == weekday }
+            specificDate || repeatsToday
+        }.sortedBy { it.optString("start") }
+    val weekStart = selectedDate.with(DayOfWeek.MONDAY)
+    val dateLabel = selectedDate.format(DateTimeFormatter.ofPattern("EEE, d MMM"))
+
+    Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(18.dp)) {
+        Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) { Text("YOUR TIMETABLE", color = Muted, fontSize = 9.sp, letterSpacing = 1.3.sp); Text(dateLabel, fontSize = 19.sp, fontWeight = FontWeight.Bold) }
+                TextButton(onClick = { selectedDate = selectedDate.minusDays(1) }, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("‹", fontSize = 24.sp) }
+                TextButton(onClick = { selectedDate = LocalDate.now() }, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Today", fontSize = 11.sp) }
+                TextButton(onClick = { selectedDate = selectedDate.plusDays(1) }, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("›", fontSize = 24.sp) }
+            }
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                (0..6).forEach { offset ->
+                    val day = weekStart.plusDays(offset.toLong())
+                    val isSelected = day == selectedDate
+                    Card(onClick = { selectedDate = day }, colors = CardDefaults.cardColors(containerColor = if (isSelected) Color(0xFF3A3554) else Night), shape = RoundedCornerShape(12.dp)) {
+                        Column(Modifier.width(43.dp).padding(vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text(day.dayOfWeek.name.take(3), color = if (isSelected) Purple else Muted, fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                            Text(day.dayOfMonth.toString(), color = if (isSelected) Color.White else Color(0xFFF4F2FC), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+            }
+            if (blocks.isEmpty()) {
+                Text("No activities planned for this day.", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(vertical = 8.dp))
+            } else {
+                blocks.forEach { entry ->
+                    val subject = (0 until subjects.length()).mapNotNull { subjects.optJSONObject(it) }.firstOrNull { it.optString("id") == entry.optString("subjectId") }
+                    val accent = runCatching { Color(android.graphics.Color.parseColor(subject?.optString("color", "#B5A9FF") ?: "#B5A9FF")) }.getOrDefault(Purple)
+                    Row(Modifier.fillMaxWidth().background(Night, RoundedCornerShape(12.dp)).padding(10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Column(Modifier.width(42.dp), horizontalAlignment = Alignment.End) {
+                            Text(entry.optString("start"), color = Color(0xFFF4F2FC), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            Text(entry.optString("end"), color = Muted, fontSize = 9.sp)
+                        }
+                        Box(Modifier.width(3.dp).height(38.dp).background(accent, RoundedCornerShape(2.dp)))
+                        Column(Modifier.weight(1f)) {
+                            Text(entry.optString("title"), color = Color(0xFFF4F2FC), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            Text(listOfNotNull(entry.optString("kind").takeIf { it.isNotBlank() }, subject?.optString("name")?.takeIf { it.isNotBlank() }).joinToString(" · "), color = Muted, fontSize = 9.sp)
+                        }
+                    }
+                }
+            }
+            TextButton(onClick = onOpenStudy, modifier = Modifier.align(Alignment.End), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Edit timetable →", fontSize = 10.sp) }
         }
     }
 }
