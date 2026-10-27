@@ -55,7 +55,7 @@ class FocusService : Service() {
         val edit = prefs.edit().putBoolean("focus_running", true).putLong("focus_deadline", deadline)
             .putLong("focus_wall_deadline", endWall).putString("focus_subject", subject)
             .putString("focus_subject_id", subjectId).putString("focus_session", session)
-        if (!restoring) edit.putInt("focus_awarded", 0)
+        if (!restoring) edit.putInt("focus_awarded", 0).putLong("focus_started_wall", nowWall).putLong("focus_duration_ms", duration)
         edit.apply()
         startForeground(NOTIFICATION, notification(duration, subject))
         wakeLock = (getSystemService(POWER_SERVICE) as PowerManager).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Aura:FocusTimer").apply { setReferenceCounted(false); acquire(duration + 60_000L) }
@@ -115,10 +115,32 @@ class FocusService : Service() {
         loop?.cancel(); loop = null
         if (wakeLock?.isHeld == true) wakeLock?.release()
         wakeLock = null
-        prefs.edit().putBoolean("focus_running", false).putLong("focus_deadline", 0).putLong("focus_wall_deadline", 0).putInt("focus_awarded", 0).remove("focus_session").apply()
+        if (prefs.getBoolean("focus_running", false)) saveStudySession()
+        prefs.edit().putBoolean("focus_running", false).putLong("focus_deadline", 0).putLong("focus_wall_deadline", 0).putLong("focus_started_wall", 0).putLong("focus_duration_ms", 0).putInt("focus_awarded", 0).remove("focus_session").apply()
         getSystemService(NotificationManager::class.java).cancel(NOTIFICATION)
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    private fun saveStudySession() {
+        val subjectId = prefs.getString("focus_subject_id", "").orEmpty()
+        val session = prefs.getString("focus_session", "").orEmpty()
+        val started = prefs.getLong("focus_started_wall", 0L)
+        if (subjectId.isBlank() || session.isBlank() || started <= 0L) return
+        val elapsed = (System.currentTimeMillis() - started).coerceAtLeast(0L)
+            .coerceAtMost(prefs.getLong("focus_duration_ms", Long.MAX_VALUE))
+        val minutes = (elapsed / 60_000L).toInt()
+        if (minutes <= 0) return
+        runCatching {
+            val planner = JSONObject(prefs.getString("planner_cache", "{}") ?: "{}")
+            val logs = planner.optJSONArray("studyLogs") ?: org.json.JSONArray()
+            if ((0 until logs.length()).any { logs.optJSONObject(it)?.optString("id") == "focus_$session" }) return
+            val date = java.time.Instant.ofEpochMilli(started).atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString()
+            logs.put(JSONObject().put("id", "focus_$session").put("subjectId", subjectId).put("date", date).put("minutes", minutes).put("topic", "").put("source", "focus"))
+            planner.put("studyLogs", logs)
+            val owner = runCatching { JSONObject(prefs.getString("account_cache", "{}") ?: "{}").optJSONObject("user")?.optString("id").orEmpty() }.getOrDefault("")
+            AuraApi.savePlannerDraft(this, planner, owner)
+        }
     }
 
     override fun onDestroy() { loop?.cancel(); if (wakeLock?.isHeld == true) wakeLock?.release(); super.onDestroy() }

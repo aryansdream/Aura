@@ -12,8 +12,8 @@ android {
         applicationId = "com.aryansdream.aura"
         minSdk = 26
         targetSdk = 35
-        versionCode = 9
-        versionName = "1.6.1"
+        versionCode = 10
+        versionName = "1.6.2"
     }
 
     buildFeatures { compose = true }

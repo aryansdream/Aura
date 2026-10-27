@@ -481,7 +481,7 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                     FilterChip(selected = reminderType == value, onClick = { reminderType = value }, label = { Text(label) })
                 }
             }
-            Text(if (reminderType == "alarm") "Alarm uses Android’s alarm clock and rings even when AURA is closed." else if (reminderType == "notification") "Android posts this notification at the scheduled time, even if AURA is closed." else "No reminder will be sent.", color = Muted, fontSize = 11.sp)
+            Text(if (reminderType == "alarm") "Uses your phone’s alarm tone and vibration at the scheduled time." else if (reminderType == "notification") "Plays a short notification beep at the scheduled time." else "No reminder will be sent.", color = Muted, fontSize = 11.sp)
             if (taskError.isNotBlank()) Text(taskError, color = Color(0xFFFF8D8D), fontSize = 11.sp)
         }
         if (reminderType == "notification" && !hasExactPermission) item {
@@ -561,6 +561,7 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
             item { Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { SectionTitle("Subjects", "Study time tracked by subject") }; TextButton(onClick = { subjectToEdit = null; subjectName = ""; subjectTeacher = ""; subjectColor = "#8B7CF6"; subjectDialog = true }) { Text("+ Subject") } } }
             item { Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { SectionTitle("Study hours", "Focus timer + manual logs") }; TextButton(onClick = { studyLogSubject = subjects.optJSONObject(0)?.optString("id").orEmpty(); studyLogMinutes = "30"; studyLogTopic = ""; logStudyDialog = true }, enabled = subjects.length() > 0) { Text("+ Log time") } } }
             item { Text("Only Focus timer sessions earn Aura Points. Manually logged hours are saved for your study record only.", color = Muted, fontSize = 11.sp) }
+            item { SubjectStudyChart(subjects, studyLogs) }
             if (subjects.length() == 0) item { EmptyCard("Add your first subject to start tracking study time.") }
             items((0 until subjects.length()).mapNotNull { subjects.optJSONObject(it) }) { subject ->
                 val logs = (0 until studyLogs.length()).mapNotNull { studyLogs.optJSONObject(it) }.filter { it.optString("subjectId") == subject.optString("id") }
@@ -574,7 +575,7 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
             }
         }
         if (mode == "Classes") {
-            item { Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { SectionTitle("Class timetable", "Open a subject to manage its class times") }; TextButton(onClick = { routineToEdit = null; routineTitle = ""; routineStart = "09:00"; routineEnd = "10:00"; routineDate = ""; routineDays = (LocalDate.now().dayOfWeek.value % 7).toString(); routineReminder = false; routineReminderInterval = 0; routineDialog = true }) { Text("+ Add subject") } } }
+            item { Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { SectionTitle("Class timetable", "Open a subject to manage times · attendance check after every class") }; TextButton(onClick = { routineToEdit = null; routineTitle = ""; routineStart = "09:00"; routineEnd = "10:00"; routineDate = ""; routineDays = (LocalDate.now().dayOfWeek.value % 7).toString(); routineReminder = false; routineReminderInterval = 0; routineDialog = true }) { Text("+ Add subject") } } }
             val classEntries = (0 until schedule.length()).mapNotNull { schedule.optJSONObject(it) }.filter { it.optString("kind", "Class") == "Class" }
             val classGroups = classEntries.groupBy { it.optString("title").ifBlank { "Untitled subject" } }.toSortedMap()
             if (classGroups.isEmpty()) item { EmptyCard("Add a subject and its class times to see your timetable.") }
@@ -650,7 +651,7 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                 }
             }
             Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                Column(Modifier.weight(1f)) { Text("Beep at class start", fontWeight = FontWeight.Medium); Text("Play a notification sound when class begins", color = Muted, fontSize = 11.sp) }
+                Column(Modifier.weight(1f)) { Text("Beep at class start", fontWeight = FontWeight.Medium); Text("Play a beep at the start; attendance check after class is always on", color = Muted, fontSize = 11.sp) }
                 Switch(checked = routineReminder, onCheckedChange = { routineReminder = it })
             }
 
@@ -721,5 +722,34 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
 private fun JSONArray.lastObjectForDay(day: String): JSONObject? { for (i in length() - 1 downTo 0) { val item = optJSONObject(i); if (item?.optString("date") == day) return item }; return null }
 private fun JSONArray.joinInts(): String = (0 until length()).mapNotNull { optInt(it).takeIf { value -> value in 0..6 } }.joinToString(",")
 private fun JSONArray.weekdayLabels(): String = (0 until length()).mapNotNull { optInt(it).takeIf { value -> value in 0..6 }?.let { listOf("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")[it] } }.joinToString(", ")
+@Composable
+private fun SubjectStudyChart(subjects: JSONArray, logs: JSONArray) {
+    val subjectList = (0 until subjects.length()).mapNotNull { subjects.optJSONObject(it) }
+    val logList = (0 until logs.length()).mapNotNull { logs.optJSONObject(it) }
+    val totals = subjectList.map { subject ->
+        val subjectLogs = logList.filter { it.optString("subjectId") == subject.optString("id") }
+        Triple(subject, subjectLogs.sumOf { it.optInt("minutes").coerceAtLeast(0) }, subjectLogs.count { it.optString("source") == "focus" })
+    }
+    val maxMinutes = totals.maxOfOrNull { it.second }?.coerceAtLeast(1) ?: 1
+    Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(16.dp)) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column { Text("Study by subject", fontWeight = FontWeight.SemiBold); Text("Recorded Focus sessions and manual logs", color = Muted, fontSize = 11.sp) }
+            if (totals.isEmpty()) Text("Add subjects to see your study graph.", color = Muted, fontSize = 12.sp)
+            totals.sortedByDescending { it.second }.forEach { (subject, minutes, sessions) ->
+                val color = runCatching { Color(android.graphics.Color.parseColor(subject.optString("color", "#B5A9FF"))) }.getOrDefault(Purple)
+                val manual = logList.filter { it.optString("subjectId") == subject.optString("id") && it.optString("source") != "focus" }.sumOf { it.optInt("minutes").coerceAtLeast(0) }
+                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(subject.optString("name"), modifier = Modifier.weight(1f), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                        Text(formatStudyTime(minutes), color = color, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                    LinearProgressIndicator(progress = { (minutes.toFloat() / maxMinutes).coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(8.dp)), color = color, trackColor = Color(0xFF303340))
+                    Text("$sessions Focus session${if (sessions == 1) "" else "s"} · ${formatStudyTime(manual)} manual", color = Muted, fontSize = 10.sp)
+                }
+            }
+        }
+    }
+}
+
 private fun formatStudyTime(minutes: Int): String = if (minutes < 60) "${minutes}m" else "${minutes / 60}h ${minutes % 60}m"
 private fun formatAuraPoints(points: Int): String = String.format(java.util.Locale.US, "%.2f", points / 100.0)

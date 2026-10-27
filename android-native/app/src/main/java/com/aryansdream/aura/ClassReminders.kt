@@ -9,6 +9,8 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.media.AudioAttributes
+import android.media.RingtoneManager
 import androidx.core.app.NotificationCompat
 import org.json.JSONArray
 import org.json.JSONObject
@@ -176,7 +178,13 @@ class TaskReminderReceiver : BroadcastReceiver() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && manager.getNotificationChannel(channelId) == null) {
             val channel = NotificationChannel(channelId, if (type == "alarm") "Task alarms" else "Task notifications", if (type == "alarm") NotificationManager.IMPORTANCE_HIGH else NotificationManager.IMPORTANCE_DEFAULT)
             channel.description = if (type == "alarm") "Sounding reminders for your scheduled tasks" else "Reminders for scheduled tasks"
-            if (type == "alarm") channel.enableVibration(true)
+            if (type == "alarm") {
+                channel.enableVibration(true)
+                channel.vibrationPattern = longArrayOf(0, 700, 300, 700, 300, 1000)
+                channel.setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM), AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
+            } else {
+                channel.setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION), AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
+            }
             manager.createNotificationChannel(channel)
         }
         val open = PendingIntent.getActivity(context, 0, Intent(context, MainActivity::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
@@ -186,16 +194,17 @@ class TaskReminderReceiver : BroadcastReceiver() {
             .setContentText(title)
             .setContentIntent(open)
             .setAutoCancel(true)
-            .setCategory(NotificationCompat.CATEGORY_REMINDER)
+            .setCategory(if (type == "alarm") NotificationCompat.CATEGORY_ALARM else NotificationCompat.CATEGORY_REMINDER)
             .setPriority(if (type == "alarm") NotificationCompat.PRIORITY_MAX else NotificationCompat.PRIORITY_DEFAULT)
-            .setDefaults(if (type == "alarm") NotificationCompat.DEFAULT_ALL else NotificationCompat.DEFAULT_SOUND)
+            .setDefaults(if (type == "alarm") NotificationCompat.DEFAULT_VIBRATE else NotificationCompat.DEFAULT_SOUND)
+            .setVibrate(if (type == "alarm") longArrayOf(0, 700, 300, 700, 300, 1000) else null)
             .build()
         manager.notify(intent.getStringExtra("id").orEmpty().hashCode(), notification)
     }
 
     companion object {
         private const val NOTIFICATION_CHANNEL = "aura_task_notifications"
-        private const val ALARM_CHANNEL = "aura_task_alarms"
+        private const val ALARM_CHANNEL = "aura_task_alarms_v2"
     }
 }
 
