@@ -5,6 +5,9 @@ dist/
 # Local credentials and platform configuration
 .env*
 .vercel/
+android-native/.gradle/
+android-native/local.properties
+android-native/**/build/
 
 # OS/editor files
 .DS_Store
