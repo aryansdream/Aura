@@ -376,6 +376,7 @@ installButton.addEventListener('click', async () => {
   if (outcome === 'accepted') installButton.hidden = true;
 });
 document.getElementById('installWebOption')?.addEventListener('click', () => installButton.click());
+document.getElementById('installWebHomeOption')?.addEventListener('click', () => installButton.click());
 window.addEventListener('appinstalled', () => { installPrompt = null; installButton.hidden = true; });
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('/sw.js').catch(() => {});
 function setAuthMode(signup) {
