@@ -33,5 +33,7 @@ Increment `versionCode` and `versionName` in `app/build.gradle.kts`, build the A
 - No preset mission catalog or Life section.
 - A native Android home-screen widget for Aura Points and day streak.
 - A More page with the community leaderboard and AURA information/contact links.
+- Same-account Aura Sync over local Wi-Fi or a phone hotspot without internet: focus sessions, Aura Point events, and clipboard text sync between Android and PC.
+- During focus, if “Share active media with Aura Sync” is enabled and Android Notification Access is granted, the phone sends encrypted active media app/title metadata over the LAN. Aura Sync runs its local classifier on the PC and can send a pause command back when its entertainment classification passes the confidence threshold. It does not send media metadata to the Aura server.
 - AURA does not request Android Usage Access. Optional social app blocking uses Accessibility and optional notification blocking uses Notification Access; both are disabled until the user turns them on and grants access.
 - Dark native interface with the infinity AURA logo and “Aura-Coz you need it!” tagline.

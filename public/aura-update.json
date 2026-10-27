@@ -1,9 +1,9 @@
 {
-  "versionCode": 27,
-  "versionName": "1.4.1",
-  "apkUrl": "https://aura-day-tracker.vercel.app/aura-android-1.4.1-master.apk",
-  "sha256": "2254666a24f7a1c2a824d54ed7ddeec7e8fe25d7abcde2c3bf6fe8e044efdc36",
-  "releaseNotes": "Aura Ecosystem 1.4.1: same features and app behavior as the verified 1.4.0 master build, with Android release version metadata updated for this release.",
+  "versionCode": 28,
+  "versionName": "1.4.2",
+  "apkUrl": "https://aura-day-tracker.vercel.app/aura-android-1.4.2-master.apk",
+  "sha256": "966200012427828a37c3874735bad8bc703778cd6bd470b9d3dbd291c3a06b6a",
+  "releaseNotes": "Aura Ecosystem 1.4.2: local same-Wi-Fi Aura Sync with encrypted Android media metadata for on-PC classification, focus and points sync, and compatibility fixes for phone hotspots.",
   "defaultVersionName": "1.4.0",
   "defaultApkUrl": "https://aura-day-tracker.vercel.app/aura-android-1.4.0-master.apk"
 }
