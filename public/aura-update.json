@@ -1,7 +1,7 @@
 {
-  "versionCode": 17,
-  "versionName": "1.2.1",
-  "apkUrl": "https://aura-day-tracker.vercel.app/aura-android-1.2.1.apk",
-  "sha256": "516d914a90750f15e7a37532e81513fe1e359b687a26470fb456b2bfdaa2c7dc",
-  "releaseNotes": "Removes Accessibility-based app blocking, adds social app detection, and uses a non-debuggable APK."
+  "versionCode": 18,
+  "versionName": "1.2.2",
+  "apkUrl": "https://aura-day-tracker.vercel.app/aura-android-1.2.2.apk",
+  "sha256": "d5bd1bd80be206cbced3b4082894fc8abd25456d38eb2ef6b57e3c97aef21e91",
+  "releaseNotes": "Adds subject attendance calculations and in-app updates, plus configurable animated water reminders during focus. Focus no longer monitors which apps are open."
 }

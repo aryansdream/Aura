@@ -31,6 +31,7 @@ class FocusService : Service() {
         super.onCreate()
         val manager = getSystemService(NotificationManager::class.java)
         if (Build.VERSION.SDK_INT >= 26) manager.createNotificationChannel(NotificationChannel(CHANNEL, "Focus timer", NotificationManager.IMPORTANCE_LOW))
+        if (Build.VERSION.SDK_INT >= 26) manager.createNotificationChannel(NotificationChannel(WATER_CHANNEL, "Focus water reminders", NotificationManager.IMPORTANCE_DEFAULT))
         if (Build.VERSION.SDK_INT >= 26) {
             val alarm = NotificationChannel(ALARM_CHANNEL, "Focus timer alerts", NotificationManager.IMPORTANCE_HIGH)
             alarm.description = "Sound and notification when a focus session ends"
@@ -52,10 +53,13 @@ class FocusService : Service() {
         val subjectId = intent?.getStringExtra("subjectId") ?: prefs.getString("focus_subject_id", "").orEmpty()
         val session = intent?.getStringExtra("session") ?: prefs.getString("focus_session", null) ?: UUID.randomUUID().toString()
         val deadline = SystemClock.elapsedRealtime() + duration
+        val waterInterval = prefs.getInt("water_interval_minutes", 30).coerceIn(15, 90)
         val edit = prefs.edit().putBoolean("focus_running", true).putLong("focus_deadline", deadline)
             .putLong("focus_wall_deadline", endWall).putString("focus_subject", subject)
             .putString("focus_subject_id", subjectId).putString("focus_session", session)
         if (!restoring) edit.putInt("focus_awarded", 0).putLong("focus_started_wall", nowWall).putLong("focus_duration_ms", duration)
+            .putInt("water_reminder_count", 0).putLong("focus_next_water_at_elapsed", SystemClock.elapsedRealtime() + waterInterval * 60_000L)
+        else if (prefs.getLong("focus_next_water_at_elapsed", 0L) == 0L) edit.putLong("focus_next_water_at_elapsed", SystemClock.elapsedRealtime() + waterInterval * 60_000L)
         edit.apply()
         startForeground(NOTIFICATION, notification(duration, subject))
         wakeLock = (getSystemService(POWER_SERVICE) as PowerManager).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Aura:FocusTimer").apply { setReferenceCounted(false); acquire(duration + 60_000L) }
@@ -65,6 +69,14 @@ class FocusService : Service() {
             while (true) {
                 val remaining = deadline - SystemClock.elapsedRealtime()
                 if (remaining <= 0) break
+                val nowElapsed = SystemClock.elapsedRealtime()
+                var nextWaterAt = prefs.getLong("focus_next_water_at_elapsed", nowElapsed + waterInterval * 60_000L)
+                if (nowElapsed >= nextWaterAt) {
+                    showWaterReminder()
+                    nextWaterAt += waterInterval * 60_000L
+                    prefs.edit().putLong("focus_next_water_at_elapsed", nextWaterAt)
+                        .putInt("water_reminder_count", prefs.getInt("water_reminder_count", 0) + 1).apply()
+                }
                 val completed = ((duration - remaining).coerceAtLeast(0) / 120_000L).toInt()
                 while (awarded < completed) {
                     awarded++
@@ -83,6 +95,19 @@ class FocusService : Service() {
             stopFocus()
         }
         return START_STICKY
+    }
+
+    private fun showWaterReminder() {
+        val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val reminder = NotificationCompat.Builder(this, WATER_CHANNEL)
+            .setSmallIcon(android.R.drawable.ic_menu_compass)
+            .setContentTitle("AURA · water break")
+            .setContentText("Take a sip of water, then continue your focus session.")
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+            .build()
+        getSystemService(NotificationManager::class.java).notify(WATER_NOTIFICATION, reminder)
     }
 
     private fun notification(remainingMs: Long, subject: String): Notification {
@@ -150,8 +175,10 @@ class FocusService : Service() {
         const val ACTION_STOP = "com.aryansdream.aura.STOP_FOCUS"
         private const val CHANNEL = "aura_focus"
         private const val ALARM_CHANNEL = "aura_focus_alarm"
+        private const val WATER_CHANNEL = "aura_focus_water"
         private const val NOTIFICATION = 701
         private const val ALARM_NOTIFICATION = 702
+        private const val WATER_NOTIFICATION = 703
     }
 }
 

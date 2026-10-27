@@ -8,7 +8,6 @@ import android.provider.Settings
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
-import android.os.PowerManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -83,17 +82,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    override fun onStop() {
-        super.onStop()
-        val power = getSystemService(POWER_SERVICE) as PowerManager
-        val prefs = getSharedPreferences("aura_native", MODE_PRIVATE)
-        // Screen-off is the one background case where the timer must keep running.
-        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-            if (power.isInteractive && prefs.getBoolean("focus_running", false) && FocusAppPolicy.shouldEndFocus(this)) {
-                startService(Intent(this, FocusService::class.java).setAction(FocusService.ACTION_STOP))
-            }
-        }, 900)
-    }
 }
 
 @Composable
@@ -117,10 +105,7 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
     var focusNow by remember { mutableLongStateOf(0L) }
     var syncMessage by remember { mutableStateOf("") }
     val focusFullScreen = page == "Focus" && localPrefs.getBoolean("focus_running", false)
-    BackHandler(enabled = focusFullScreen) {
-        onStopFocus()
-        page = "Today"
-    }
+    BackHandler(enabled = focusFullScreen) { page = "Today" }
     SideEffect {
         val activity = context as? ComponentActivity ?: return@SideEffect
         val controller = androidx.core.view.WindowCompat.getInsetsController(activity.window, activity.window.decorView)
@@ -240,7 +225,7 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
             if (!focusFullScreen && syncMessage.isNotBlank() && error.isBlank()) Text(syncMessage, Modifier.padding(horizontal = 20.dp), color = Color(0xFF83D6C4), fontSize = 11.sp)
             when (page) {
                 "Today" -> HomePage(account, planner, onOpenStudy = { page = "Classes" })
-                "Focus" -> FocusPage(planner.optJSONArray("subjects") ?: JSONArray(), subjectChoice, { subjectChoice = it }, focusMinutes, { focusMinutes = it }, context.getSharedPreferences("aura_native", 0).getLong("focus_deadline", 0), focusNow, onStartFocus, onStopFocus)
+                "Focus" -> FocusPage(planner.optJSONArray("subjects") ?: JSONArray(), subjectChoice, { subjectChoice = it }, focusMinutes, { focusMinutes = it }, localPrefs.getInt("water_interval_minutes", 30), { localPrefs.edit().putInt("water_interval_minutes", it).apply() }, context.getSharedPreferences("aura_native", 0).getLong("focus_deadline", 0), focusNow, onStartFocus, onStopFocus)
                 "Subjects" -> StudyPage(planner, "Subjects") { next -> saveNativePlanner(next, "Subjects saved and synced.") }
                 "Classes" -> StudyPage(planner, "Classes") { next -> saveNativePlanner(next, "Class timetable saved and synced.") }
                 "Tasks" -> TasksPage(context, planner) { next ->
@@ -388,16 +373,41 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
 
 @Composable private fun Metric(label: String, value: String) { Column { Text(label, color = Muted, fontSize = 8.sp, letterSpacing = 1.sp); Text(value, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color(0xFF83D6C4)) } }
 
+@Composable private fun WaterReminderAnimation() {
+    val motion = rememberInfiniteTransition(label = "water reminder")
+    val bob by motion.animateFloat(-5f, 5f, infiniteRepeatable(tween(700, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "water drop")
+    val glow by motion.animateFloat(0.72f, 1f, infiniteRepeatable(tween(900), RepeatMode.Reverse), label = "water glow")
+    Row(Modifier.fillMaxWidth().background(Color(0xFF101D23), RoundedCornerShape(18.dp)).padding(horizontal = 18.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+        Text("💧", fontSize = 30.sp, modifier = Modifier.offset(y = bob.dp))
+        Column(Modifier.padding(start = 12.dp)) {
+            Text("HYDRATION PAUSE", color = Color(0xFF8DE1E2).copy(alpha = glow), fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+            Text("Take a sip of water", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable private fun FocusPage(subjects: JSONArray, selected: String, select: (String) -> Unit, minutes: Int, setMinutes: (Int) -> Unit, deadline: Long, focusNow: Long, start: (String, String, Int) -> Unit, stop: () -> Unit) {
+@Composable private fun FocusPage(subjects: JSONArray, selected: String, select: (String) -> Unit, minutes: Int, setMinutes: (Int) -> Unit, waterInterval: Int, setWaterInterval: (Int) -> Unit, deadline: Long, focusNow: Long, start: (String, String, Int) -> Unit, stop: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val isRunning = context.getSharedPreferences("aura_native", 0).getBoolean("focus_running", false)
     val remaining = ((deadline - focusNow).coerceAtLeast(0) / 1000).toInt()
+    var waterReminderVisible by remember { mutableStateOf(false) }
+    val waterReminderCount = context.getSharedPreferences("aura_native", 0).getInt("water_reminder_count", 0)
+    var lastSeenWaterReminder by remember { mutableIntStateOf(waterReminderCount) }
+    LaunchedEffect(waterReminderCount, isRunning) {
+        if (isRunning && waterReminderCount > lastSeenWaterReminder) {
+            lastSeenWaterReminder = waterReminderCount
+            waterReminderVisible = true
+            delay(8_000)
+            waterReminderVisible = false
+        }
+    }
     if (isRunning) {
         val clock = LocalDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm"))
         Column(Modifier.fillMaxSize().background(Color.Black).padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.SpaceEvenly) {
             Text(clock, color = Color(0xFFB9B9B9), fontSize = 22.sp, letterSpacing = 3.sp, fontWeight = FontWeight.Light)
             StudyingCharacter()
+            androidx.compose.animation.AnimatedVisibility(visible = waterReminderVisible) { WaterReminderAnimation() }
             Text("%02d:%02d".format(remaining / 60, remaining % 60), color = Color.White, fontSize = 76.sp, fontWeight = FontWeight.Light, letterSpacing = 2.sp)
             TextButton(onClick = stop) { Text("END FOCUS SESSION", color = Color(0xFFFFA6B7), fontSize = 11.sp, letterSpacing = 1.5.sp) }
         }
@@ -411,7 +421,7 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
         if (isRunning) {
             Text(context.getSharedPreferences("aura_native", 0).getString("focus_subject", "Study session").orEmpty(), color = Muted)
             Button(onClick = stop, modifier = Modifier.fillMaxWidth().padding(top = 25.dp)) { Text("End focus") }
-            Text("Timer continues with the screen off. ChatGPT, Gemini, YouTube, and other non-social apps are allowed; focus ends if you open social media or go home. Usage Access is needed.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp, modifier = Modifier.padding(top = 12.dp))
+            Text("Timer keeps running if you switch apps or turn off your screen. AURA does not track which apps you open.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp, modifier = Modifier.padding(top = 12.dp))
         } else {
             Text("Choose a subject", color = Muted, modifier = Modifier.align(Alignment.Start))
             var expanded by remember { mutableStateOf(false) }
@@ -425,15 +435,13 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                 Text("$minutes min", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(horizontal = 18.dp))
                 IconButton(onClick = { setMinutes((minutes + 5).coerceAtMost(180)) }) { Icon(Icons.Default.Add, "Longer") }
             }
-            Button(onClick = { subjectList.firstOrNull { it.optString("id") == selected }?.let { start(selected, it.optString("name"), minutes) } }, enabled = selected.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Start focus session") }
-            val usageAccessEnabled = FocusAppPolicy.hasUsageAccess(context)
-            Card(Modifier.fillMaxWidth().padding(top = 12.dp), colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) {
-                Column(Modifier.fillMaxWidth().padding(14.dp)) {
-                    Text(if (usageAccessEnabled) "Social app detection is ready" else "Enable app-switch detection", fontWeight = FontWeight.SemiBold)
-                    Text("When Focus runs, opening a selected social app or the home screen ends the timer. AURA does not cover or block apps.", color = Muted, fontSize = 11.sp, lineHeight = 15.sp, modifier = Modifier.padding(top = 4.dp))
-                    if (!usageAccessEnabled) TextButton(onClick = { runCatching { context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) } }) { Text("Open Usage Access settings") }
+            Text("Water reminder", color = Muted, modifier = Modifier.align(Alignment.Start))
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 6.dp, bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf(15, 20, 30, 45, 60, 90).forEach { interval ->
+                    FilterChip(selected = waterInterval == interval, onClick = { setWaterInterval(interval) }, label = { Text("$interval min") })
                 }
             }
+            Button(onClick = { subjectList.firstOrNull { it.optString("id") == selected }?.let { start(selected, it.optString("name"), minutes) } }, enabled = selected.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Start focus session") }
             val notificationBlockerEnabled = FocusNotificationListener.isEnabled(context)
             Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) {
                 Column(Modifier.fillMaxWidth().padding(14.dp)) {
@@ -442,7 +450,7 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                     if (!notificationBlockerEnabled) TextButton(onClick = { runCatching { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) } }) { Text("Open Notification access settings") }
                 }
             }
-            Text("ChatGPT, Gemini, YouTube, and other non-social apps stay available during Focus. Opening a selected social app or the home screen ends the focus timer. Usage Access is required to detect app switches. Notification access is optional and can mute social app alerts while Focus is active.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp, modifier = Modifier.padding(top = 8.dp))
+            Text("Focus can run anytime and stays active when you switch apps or lock your screen. AURA does not monitor app usage. Water reminders appear at your chosen interval; social notification muting is optional.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp, modifier = Modifier.padding(top = 8.dp))
         }
     }
 }
@@ -624,9 +632,12 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                 val subjectAttendance = (0 until attendance.length()).mapNotNull { attendance.optJSONObject(it) }.filter { it.optString("subjectId") == subject.optString("id") || it.optString("subjectName").equals(subject.optString("name"), true) }
                 val presentCount = subjectAttendance.count { it.optString("status") == "present" }
                 val absentCount = subjectAttendance.count { it.optString("status") == "absent" }
+                val markedCount = presentCount + absentCount
+                val attendancePercent = if (markedCount > 0) (presentCount * 100f / markedCount).toInt() else 0
+                val classesNeededFor75 = if (attendancePercent >= 75 || markedCount == 0) 0 else kotlin.math.ceil((0.75 * markedCount - presentCount) / 0.25).toInt().coerceAtLeast(0)
                 Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) { Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.size(12.dp).background(runCatching { Color(android.graphics.Color.parseColor(subject.optString("color", "#B5A9FF"))) }.getOrDefault(Purple), CircleShape))
-                    Column(Modifier.weight(1f).padding(start = 12.dp)) { Text(subject.optString("name"), fontWeight = FontWeight.SemiBold); Text("Today ${formatStudyTime(todayMinutes)} · Total ${formatStudyTime(totalMinutes)}", color = Muted, fontSize = 11.sp); Text("Attendance · $presentCount present · $absentCount absent", color = Muted, fontSize = 10.sp); if (subject.optString("teacher").isNotBlank()) Text(subject.optString("teacher"), color = Muted, fontSize = 10.sp) }
+                    Column(Modifier.weight(1f).padding(start = 12.dp)) { Text(subject.optString("name"), fontWeight = FontWeight.SemiBold); Text("Today ${formatStudyTime(todayMinutes)} · Total ${formatStudyTime(totalMinutes)}", color = Muted, fontSize = 11.sp); Text(if (markedCount == 0) "Attendance · no classes marked" else "Attendance · $attendancePercent% ($presentCount/$markedCount) · 75% target", color = if (markedCount > 0 && attendancePercent < 75) Color(0xFFFFB98A) else Muted, fontSize = 10.sp); if (markedCount > 0 && classesNeededFor75 > 0) Text("Attend next $classesNeededFor75 classes to reach 75%", color = Muted, fontSize = 10.sp); if (subject.optString("teacher").isNotBlank()) Text(subject.optString("teacher"), color = Muted, fontSize = 10.sp) }
                     TextButton(onClick = { subjectToEdit = subject.optString("id"); subjectName = subject.optString("name"); subjectTeacher = subject.optString("teacher"); subjectColor = subject.optString("color", "#8B7CF6"); subjectDialog = true }) { Text("Edit") }
                 } }
             }
@@ -788,7 +799,7 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
             LinkRow("Personal Instagram", "@aryant1wari", "https://www.instagram.com/aryant1wari/", context)
             LinkRow("Email", "aryantiwari90605@gmail.com", "mailto:aryantiwari90605@gmail.com", context)
         } }
-        item { InfoCard("Device features", "Add the AURA points and day-streak widget from your Android home screen: long-press the home screen, choose Widgets, then select AURA. The focus timer continues with the screen off. ChatGPT, Gemini and YouTube stay available; opening selected social apps or the home screen ends Focus. Usage Access enables app-switch detection. Notification access is optional for silencing social alerts during Focus. Scheduled task alarms and notifications are set in the Tasks tab. Android may ask for notification permission; exact Notification reminders may also require Alarms & reminders access. Alarms use Android’s alarm service and can ring while AURA is closed.") }
+        item { InfoCard("Device features", "Add the AURA points and day-streak widget from your Android home screen: long-press the home screen, choose Widgets, then select AURA. The focus timer runs while you switch apps or turn off the screen; AURA does not track app usage. Choose a water reminder interval before starting Focus. Social notification muting is optional. Scheduled task alarms and notifications are set in the Tasks tab. Android may ask for notification permission; exact task reminders may also require Alarms & reminders access. Alarms use Android’s alarm service and can ring while AURA is closed.") }
         item { InfoCard("App updates", "Installed version $installedVersion. Check here for new AURA versions and install them without leaving the app. Android will ask you to confirm each installation.") {
             Button(onClick = onUpdate, modifier = Modifier.fillMaxWidth().padding(top = 12.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF55459B))) {
                 Icon(Icons.Default.SystemUpdateAlt, contentDescription = null, modifier = Modifier.size(18.dp))
