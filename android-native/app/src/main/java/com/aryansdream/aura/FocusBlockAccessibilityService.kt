@@ -27,19 +27,19 @@ class FocusBlockAccessibilityService : AccessibilityService() {
     private var lastForegroundPackage: String? = null
     private val delayedHide = Runnable { hideBlocker() }
     private val focusChangedReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) { inspectCurrentApp() }
+        override fun onReceive(context: Context?, intent: Intent?) { lastForegroundPackage = null; inspectCurrentApp() }
     }
     private val checkActive = object : Runnable {
         override fun run() {
             val prefs = getSharedPreferences("aura_native", MODE_PRIVATE)
-            if (!prefs.getBoolean("focus_running", false) || !prefs.getBoolean("block_social_apps", false)) hideBlocker()
+            if (!prefs.getBoolean("focus_running", false) || (!prefs.getBoolean("block_social_apps", false) && !prefs.getBoolean("media_auto_pause_enabled", false))) hideBlocker()
             if (blocker != null) handler.postDelayed(this, 500)
         }
     }
 
     override fun onServiceConnected() {
         LanFocusSync.start(this)
-        val filter = IntentFilter(FocusService.ACTION_FOCUS_STATE_CHANGED)
+        val filter = IntentFilter().apply { addAction(FocusService.ACTION_FOCUS_STATE_CHANGED); addAction(ACTION_MEDIA_RESTRICTED) }
         if (android.os.Build.VERSION.SDK_INT >= 33) registerReceiver(focusChangedReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
         else registerReceiver(focusChangedReceiver, filter)
         serviceInfo = AccessibilityServiceInfo().apply {
@@ -54,7 +54,7 @@ class FocusBlockAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val prefs = getSharedPreferences("aura_native", MODE_PRIVATE)
-        val active = prefs.getBoolean("focus_running", false) && prefs.getBoolean("block_social_apps", false)
+        val active = prefs.getBoolean("focus_running", false) && (prefs.getBoolean("block_social_apps", false) || prefs.getBoolean("media_auto_pause_enabled", false))
         if (!active) { hideBlocker(); return }
         if (event?.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
         val foregroundPackage = event.packageName?.toString()?.takeIf { it.isNotBlank() } ?: return
@@ -66,7 +66,7 @@ class FocusBlockAccessibilityService : AccessibilityService() {
         if (foregroundPackage == packageName && blocker != null) return
         if (foregroundPackage == lastForegroundPackage) return
         lastForegroundPackage = foregroundPackage
-        if (FocusAppPolicy.isDistracting(this, foregroundPackage)) {
+        if (isRestrictedPackage(foregroundPackage)) {
             handler.removeCallbacks(delayedHide)
             showBlocker()
         } else if (blocker != null) {
@@ -81,11 +81,19 @@ class FocusBlockAccessibilityService : AccessibilityService() {
 
     private fun inspectCurrentApp() {
         val prefs = getSharedPreferences("aura_native", MODE_PRIVATE)
-        if (!prefs.getBoolean("focus_running", false) || !prefs.getBoolean("block_social_apps", false)) {
+        if (!prefs.getBoolean("focus_running", false) || (!prefs.getBoolean("block_social_apps", false) && !prefs.getBoolean("media_auto_pause_enabled", false))) {
             hideBlocker(); return
         }
         val current = rootInActiveWindow?.packageName?.toString()
-        if (FocusAppPolicy.isDistracting(this, current)) showBlocker() else if (blocker != null) hideBlocker()
+        if (isRestrictedPackage(current)) { lastForegroundPackage = current; showBlocker() } else if (blocker != null) hideBlocker()
+    }
+
+    private fun isRestrictedPackage(app: String?): Boolean {
+        if (app.isNullOrBlank()) return false
+        val prefs = getSharedPreferences("aura_native", MODE_PRIVATE)
+        if (!prefs.getBoolean("focus_running", false)) return false
+        if (prefs.getBoolean("block_social_apps", false) && FocusAppPolicy.isDistracting(this, app)) return true
+        return prefs.getBoolean("media_auto_pause_enabled", false) && prefs.getString("media_blocked_package", null) == app
     }
 
     override fun onDestroy() {
@@ -111,7 +119,7 @@ class FocusBlockAccessibilityService : AccessibilityService() {
             gravity = Gravity.CENTER
         }, match())
         root.addView(TextView(this).apply {
-            text = "Social app paused"
+            text = if (getSharedPreferences("aura_native", MODE_PRIVATE).getString("media_blocked_package", null) == lastForegroundPackage) "Media paused for Focus" else "Social app paused"
             textSize = 25f
             setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
@@ -156,6 +164,7 @@ class FocusBlockAccessibilityService : AccessibilityService() {
     private fun match() = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
     companion object {
+        const val ACTION_MEDIA_RESTRICTED = "com.aryansdream.aura.MEDIA_RESTRICTED"
         fun isEnabled(context: android.content.Context): Boolean {
             val component = ComponentName(context, FocusBlockAccessibilityService::class.java)
             val enabled = Settings.Secure.getString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES).orEmpty()

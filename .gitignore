@@ -1,6 +1,8 @@
 # Dependencies and generated output
 node_modules/
 dist/
+desktop-sync/node_modules/
+desktop-sync/release/
 
 # Local credentials and platform configuration
 .env*

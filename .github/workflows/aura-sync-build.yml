@@ -1,0 +1,49 @@
+name: Aura Sync desktop builds
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'desktop-sync/**'
+      - '.github/workflows/aura-sync-build.yml'
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: desktop-sync
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop-sync/package-lock.json
+      - run: npm ci
+      - run: npm run dist:linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aura-sync-linux
+          path: desktop-sync/release/*
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop-sync
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop-sync/package-lock.json
+      - run: npm ci
+      - run: npm run dist:windows
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aura-sync-windows
+          path: desktop-sync/release/*
+          if-no-files-found: error

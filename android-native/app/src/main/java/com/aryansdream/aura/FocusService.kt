@@ -70,7 +70,7 @@ class FocusService : Service() {
         val startedWall = if (remoteSync) intent?.getLongExtra("startedAt", 0L)?.takeIf { it > 0L } ?: nowWall else nowWall
         val deadline = SystemClock.elapsedRealtime() + duration
         val waterInterval = prefs.getInt("water_interval_minutes", 30).coerceIn(5, 90)
-        val edit = prefs.edit().putBoolean("focus_running", true).putLong("focus_deadline", deadline)
+        val edit = prefs.edit().putBoolean("focus_running", true).remove("media_blocked_package").putLong("focus_deadline", deadline)
             .putLong("focus_wall_deadline", endWall).putString("focus_subject", subject)
             .putString("focus_subject_id", subjectId).putString("focus_session", session)
         if (!restoring) edit.putInt("focus_awarded", 0).putLong("focus_started_wall", startedWall).putLong("focus_duration_ms", endWall - startedWall)
@@ -227,7 +227,7 @@ class FocusService : Service() {
         wakeLock = null
         val session = prefs.getString("focus_session", "").orEmpty()
         if (prefs.getBoolean("focus_running", false)) saveStudySession()
-        prefs.edit().putBoolean("focus_running", false).putLong("focus_deadline", 0).putLong("focus_wall_deadline", 0).putLong("focus_started_wall", 0).putLong("focus_duration_ms", 0).putInt("focus_awarded", 0).remove("focus_session").apply()
+        prefs.edit().putBoolean("focus_running", false).remove("media_blocked_package").putLong("focus_deadline", 0).putLong("focus_wall_deadline", 0).putLong("focus_started_wall", 0).putLong("focus_duration_ms", 0).putInt("focus_awarded", 0).remove("focus_session").apply()
         if (syncRemote && session.isNotBlank()) LanFocusSync.publish(applicationContext, session, false)
         sendBroadcast(Intent(ACTION_FOCUS_STATE_CHANGED).setPackage(packageName))
         getSystemService(NotificationManager::class.java).cancel(NOTIFICATION)

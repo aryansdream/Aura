@@ -1,0 +1,27 @@
+{
+  "name": "aura-sync",
+  "version": "1.0.0",
+  "description": "Local-first Aura companion for Linux and Windows",
+  "author": "Aryan Tiwari <aryantiwari90605@gmail.com>",
+  "homepage": "https://aura-day-tracker.vercel.app",
+  "main": "src/main.cjs",
+  "build": {
+    "appId": "com.aryansdream.aurasync",
+    "productName": "Aura Sync",
+    "icon": "../public/aura-icon-512.png",
+    "directories": { "output": "release" },
+    "files": ["src/**/*", "package.json"],
+    "linux": { "category": "Utility", "target": ["deb", "AppImage"], "executableName": "aura-sync", "maintainer": "Aryan Tiwari <aryantiwari90605@gmail.com>" },
+    "win": { "icon": "src/aura-sync.ico", "target": [{ "target": "nsis", "arch": ["x64"] }] },
+    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true, "createDesktopShortcut": true }
+  },
+  "scripts": {
+    "start": "electron .",
+    "dist:linux": "electron-builder --linux deb AppImage",
+    "dist:windows": "electron-builder --win nsis"
+  },
+  "devDependencies": {
+    "electron": "^45.0.0",
+    "electron-builder": "^26.0.12"
+  }
+}

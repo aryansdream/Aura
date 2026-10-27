@@ -19,6 +19,8 @@ import java.util.concurrent.Executors
 import java.util.concurrent.Executors.newSingleThreadScheduledExecutor
 import java.util.concurrent.TimeUnit
 import javax.crypto.Mac
+import javax.crypto.Cipher
+import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 /** Signed, same-Wi-Fi focus-state beacons. No focus state is sent to the cloud. */
@@ -115,6 +117,45 @@ object LanFocusSync {
         }
     }
 
+    /** Send active media metadata encrypted to same-account devices on the LAN.
+     * The companion PC classifies it locally; metadata is never sent to Aura's server. */
+    fun publishMedia(context: Context, appName: String, packageName: String, title: String, artist: String) {
+        val app = context.applicationContext
+        val prefs = app.getSharedPreferences("aura_native", Context.MODE_PRIVATE)
+        if (!prefs.getBoolean("media_detection_enabled", false) || !prefs.getBoolean("focus_running", false)) return
+        executor.execute {
+            runCatching {
+                if (!isWifiConnected(app)) return@runCatching
+                val account = JSONObject(prefs.getString("account_cache", "{}") ?: "{}")
+                val userId = account.optJSONObject("user")?.optString("id").orEmpty()
+                val key = account.optJSONObject("profile")?.optString("lanSyncKey").orEmpty()
+                if (userId.isBlank() || key.length < 32) return@runCatching
+                val device = deviceId(prefs)
+                val sentAt = System.currentTimeMillis()
+                val aad = "$userId|$device|$sentAt".toByteArray(Charsets.UTF_8)
+                if (!key.matches(Regex("[0-9a-fA-F]{64}"))) return@runCatching
+                val rawHexKey = ByteArray(32) { i -> key.substring(i * 2, i * 2 + 2).toInt(16).toByte() }
+                val aesKey = java.security.MessageDigest.getInstance("SHA-256").digest(rawHexKey)
+                val iv = ByteArray(12).also { java.security.SecureRandom().nextBytes(it) }
+                val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+                cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(aesKey, "AES"), GCMParameterSpec(128, iv))
+                cipher.updateAAD(aad)
+                val clear = JSONObject().put("app", appName.take(100)).put("packageName", packageName.take(180))
+                    .put("title", title.take(180)).put("artist", artist.take(120)).toString().toByteArray(Charsets.UTF_8)
+                val payload = JSONObject().put("kind", "media").put("accountId", userId).put("deviceId", device)
+                    .put("sentAt", sentAt).put("mediaIv", android.util.Base64.encodeToString(iv, android.util.Base64.NO_WRAP))
+                    .put("mediaData", android.util.Base64.encodeToString(cipher.doFinal(clear), android.util.Base64.NO_WRAP))
+                val body = payload.toString()
+                val envelope = JSONObject().put("payload", body).put("signature", sign(key, body))
+                val bytes = envelope.toString().toByteArray(Charsets.UTF_8)
+                DatagramSocket().use { socket ->
+                    socket.broadcast = true
+                    socket.send(DatagramPacket(bytes, bytes.size, broadcastAddress(app), PORT))
+                }
+            }
+        }
+    }
+
     private fun sendHello(context: Context) {
         runCatching {
             if (!isWifiConnected(context)) return@runCatching
@@ -127,6 +168,8 @@ object LanFocusSync {
             val payload = JSONObject().put("kind", "hello").put("accountId", userId)
                 .put("deviceId", deviceId(prefs)).put("deviceName", Build.MODEL.take(40))
                 .put("port", port).put("sentAt", System.currentTimeMillis())
+                .put("focusActive", prefs.getBoolean("focus_running", false))
+                .put("focusSubject", prefs.getString("focus_subject", "").orEmpty())
             val body = payload.toString()
             val envelope = JSONObject().put("payload", body).put("signature", sign(key, body))
             val bytes = envelope.toString().toByteArray(Charsets.UTF_8)
@@ -233,6 +276,18 @@ object LanFocusSync {
                         prefs.edit().putStringSet("lan_seen_point_events", seen.takeLast(4000).toSet())
                             .putString("account_cache", cached.toString()).apply()
                         AuraWidgetProvider.sync(context, cached)
+                        continue
+                    }
+                    if (kind == "media_pause") {
+                        if (message.optString("targetDeviceId") != deviceId(prefs) ||
+                            !prefs.getBoolean("media_detection_enabled", false) ||
+                            !prefs.getBoolean("media_auto_pause_enabled", false) ||
+                            !prefs.getBoolean("focus_running", false)) continue
+                        val packageName = message.optString("packageName")
+                        if (packageName.isBlank()) continue
+                        prefs.edit().putString("media_blocked_package", packageName).apply()
+                        FocusNotificationListener.pauseMedia(context, packageName)
+                        context.sendBroadcast(Intent(FocusBlockAccessibilityService.ACTION_MEDIA_RESTRICTED).setPackage(context.packageName))
                         continue
                     }
                     if (kind != "focus") continue

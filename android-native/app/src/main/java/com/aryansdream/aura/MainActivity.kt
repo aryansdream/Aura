@@ -480,6 +480,8 @@ private fun AuraApp(isDarkMode: Boolean, onThemeChange: (Boolean) -> Unit, onSta
     var blockApps by remember { mutableStateOf(prefs.getBoolean("block_social_apps", false)) }
     var blockNotifications by remember { mutableStateOf(prefs.getBoolean("block_social_notifications", false)) }
     var clipboardSync by remember { mutableStateOf(prefs.getBoolean("lan_clipboard_sync", true)) }
+    var mediaDetection by remember { mutableStateOf(prefs.getBoolean("media_detection_enabled", false)) }
+    var mediaAutoPause by remember { mutableStateOf(prefs.getBoolean("media_auto_pause_enabled", false)) }
     var waterReminderCount by remember { mutableIntStateOf(prefs.getInt("water_reminder_count", 0)) }
     var showWaterPrompt by remember { mutableStateOf(false) }
     var accessibilityEnabled by remember { mutableStateOf(FocusBlockAccessibilityService.isEnabled(context)) }
@@ -493,6 +495,12 @@ private fun AuraApp(isDarkMode: Boolean, onThemeChange: (Boolean) -> Unit, onSta
             if (latest > seenCount) { seenCount = latest; waterReminderCount = latest; showWaterPrompt = true }
             accessibilityEnabled = FocusBlockAccessibilityService.isEnabled(context)
             notificationListenerEnabled = FocusNotificationListener.isEnabled(context)
+        }
+    }
+    LaunchedEffect(Unit) {
+        while (true) {
+            notificationListenerEnabled = FocusNotificationListener.isEnabled(context)
+            delay(1000)
         }
     }
     val remaining = ((deadline - focusNow).coerceAtLeast(0) / 1000).toInt()
@@ -550,6 +558,12 @@ private fun AuraApp(isDarkMode: Boolean, onThemeChange: (Boolean) -> Unit, onSta
                     HorizontalDivider(color = Muted.copy(alpha = .2f))
                     Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("Block social app notifications", fontWeight = FontWeight.Medium); Text("Mute their alerts during focus", color = Muted, fontSize = 10.sp) }; Switch(checked = blockNotifications, onCheckedChange = { blockNotifications = it; prefs.edit().putBoolean("block_social_notifications", it).apply() }) }
                     if (blockNotifications && !notificationListenerEnabled) TextButton(onClick = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }) { Text("Allow notification access") }
+                    HorizontalDivider(color = Muted.copy(alpha = .2f))
+                    Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("Share active media with Aura Sync", fontWeight = FontWeight.Medium); Text("Only during Focus; sends player app and title over encrypted Wi‑Fi", color = Muted, fontSize = 10.sp) }; Switch(checked = mediaDetection, onCheckedChange = { enabled -> mediaDetection = enabled; prefs.edit().putBoolean("media_detection_enabled", enabled).apply(); if (enabled && !notificationListenerEnabled) context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }) }
+                    if (mediaDetection && !notificationListenerEnabled) TextButton(onClick = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }) { Text("Allow media access in Notification access") }
+                    Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("Pause and cover detected media", fontWeight = FontWeight.Medium); Text("Aura Sync can pause likely entertainment and cover its app during Focus", color = Muted, fontSize = 10.sp) }; Switch(checked = mediaAutoPause, enabled = mediaDetection, onCheckedChange = { mediaAutoPause = it; prefs.edit().putBoolean("media_auto_pause_enabled", it).apply() }) }
+                    if (mediaAutoPause && !accessibilityEnabled) TextButton(onClick = { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) { Text("Enable AURA accessibility to cover the app") }
+                    Text("The Aura Sync model runs on your PC. It sees only Android media-session metadata, not screen images or audio. A confident entertainment result (76%+) can pause the player; Android covers that app only when Accessibility is enabled.", color = Muted, fontSize = 10.sp, lineHeight = 14.sp)
                     HorizontalDivider(color = Muted.copy(alpha = .2f))
                     Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("Aura Ecosystem clipboard", fontWeight = FontWeight.Medium); Text("Sync copied text across Aura devices on this Wi-Fi", color = Muted, fontSize = 10.sp) }; Switch(checked = clipboardSync, onCheckedChange = { clipboardSync = it; prefs.edit().putBoolean("lan_clipboard_sync", it).apply() }) }
                     Text("Clipboard sync is local to this Wi-Fi and keeps working without Aura’s server. Android only lets Aura read clipboard changes while Aura is open; sensitive clipboard items are skipped.", color = Muted, fontSize = 10.sp, lineHeight = 14.sp)
