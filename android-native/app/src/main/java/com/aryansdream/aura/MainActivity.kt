@@ -105,7 +105,10 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
     var focusNow by remember { mutableLongStateOf(0L) }
     var syncMessage by remember { mutableStateOf("") }
     val focusFullScreen = page == "Focus" && localPrefs.getBoolean("focus_running", false)
-    BackHandler(enabled = focusFullScreen) { page = "Today" }
+    BackHandler(enabled = focusFullScreen) {
+        onStopFocus()
+        page = "Today"
+    }
     SideEffect {
         val activity = context as? ComponentActivity ?: return@SideEffect
         val controller = androidx.core.view.WindowCompat.getInsetsController(activity.window, activity.window.decorView)
@@ -132,22 +135,8 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                 val pendingDraft = if (localPrefs.getString("pending_owner", null) == accountId) localPrefs.getString("pending_planner", null) else null
                 planner = pendingDraft?.let(::JSONObject) ?: plan.optJSONObject("data") ?: JSONObject()
                 val existingSchedule = planner.optJSONArray("schedule") ?: JSONArray()
-                val subjects = planner.optJSONArray("subjects") ?: JSONArray()
-                val classesOnly = JSONArray()
-                for (i in 0 until existingSchedule.length()) {
-                    val entry = existingSchedule.optJSONObject(i)?.takeIf { it.optString("kind", "Class") == "Class" } ?: continue
-                    if (entry.optString("subjectId").isBlank()) {
-                        val title = entry.optString("title")
-                        var subject = (0 until subjects.length()).mapNotNull { subjects.optJSONObject(it) }.firstOrNull { it.optString("name").equals(title, true) }
-                        if (subject == null) {
-                            subject = JSONObject().put("id", "class_subject_${title.trim().lowercase().replace(Regex("[^a-z0-9]+"), "_")}").put("name", title).put("teacher", "").put("color", "#8B7CF6").put("notes", "")
-                            subjects.put(subject)
-                        }
-                        entry.put("subjectId", subject.optString("id"))
-                    }
-                    classesOnly.put(entry)
-                }
-                planner.put("subjects", subjects).put("schedule", classesOnly)
+                val classesOnly = JSONArray(); for (i in 0 until existingSchedule.length()) existingSchedule.optJSONObject(i)?.takeIf { it.optString("kind", "Class") == "Class" }?.let(classesOnly::put)
+                planner.put("schedule", classesOnly)
                 AuraWidgetProvider.sync(context, me)
                 localPrefs.edit().putString("account_cache", me.toString()).putString("planner_cache", planner.toString()).apply()
                 ClassReminderScheduler.sync(context, planner)
@@ -225,7 +214,7 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
             if (!focusFullScreen && syncMessage.isNotBlank() && error.isBlank()) Text(syncMessage, Modifier.padding(horizontal = 20.dp), color = Color(0xFF83D6C4), fontSize = 11.sp)
             when (page) {
                 "Today" -> HomePage(account, planner, onOpenStudy = { page = "Classes" }, saveAttendance = { next -> saveNativePlanner(next, "Attendance saved and synced.") })
-                "Focus" -> FocusPage(planner.optJSONArray("subjects") ?: JSONArray(), subjectChoice, { subjectChoice = it }, focusMinutes, { focusMinutes = it }, localPrefs.getInt("water_interval_minutes", 30), { localPrefs.edit().putInt("water_interval_minutes", it).apply() }, context.getSharedPreferences("aura_native", 0).getLong("focus_deadline", 0), focusNow, onStartFocus, onStopFocus)
+                "Focus" -> FocusPage(planner.optJSONArray("subjects") ?: JSONArray(), subjectChoice, { subjectChoice = it }, focusMinutes, { focusMinutes = it }, context.getSharedPreferences("aura_native", 0).getLong("focus_deadline", 0), focusNow, onStartFocus, onStopFocus)
                 "Subjects" -> StudyPage(planner, "Subjects") { next -> saveNativePlanner(next, "Subjects saved and synced.") }
                 "Classes" -> StudyPage(planner, "Classes") { next -> saveNativePlanner(next, "Class timetable saved and synced.") }
                 "Tasks" -> TasksPage(context, planner) { next ->
@@ -367,41 +356,16 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
 
 @Composable private fun Metric(label: String, value: String) { Column { Text(label, color = Muted, fontSize = 8.sp, letterSpacing = 1.sp); Text(value, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color(0xFF83D6C4)) } }
 
-@Composable private fun WaterReminderAnimation() {
-    val motion = rememberInfiniteTransition(label = "water reminder")
-    val bob by motion.animateFloat(-5f, 5f, infiniteRepeatable(tween(700, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "water drop")
-    val glow by motion.animateFloat(0.72f, 1f, infiniteRepeatable(tween(900), RepeatMode.Reverse), label = "water glow")
-    Row(Modifier.fillMaxWidth().background(Color(0xFF101D23), RoundedCornerShape(18.dp)).padding(horizontal = 18.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
-        Text("💧", fontSize = 30.sp, modifier = Modifier.offset(y = bob.dp))
-        Column(Modifier.padding(start = 12.dp)) {
-            Text("HYDRATION PAUSE", color = Color(0xFF8DE1E2).copy(alpha = glow), fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
-            Text("Take a sip of water", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-        }
-    }
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable private fun FocusPage(subjects: JSONArray, selected: String, select: (String) -> Unit, minutes: Int, setMinutes: (Int) -> Unit, waterInterval: Int, setWaterInterval: (Int) -> Unit, deadline: Long, focusNow: Long, start: (String, String, Int) -> Unit, stop: () -> Unit) {
+@Composable private fun FocusPage(subjects: JSONArray, selected: String, select: (String) -> Unit, minutes: Int, setMinutes: (Int) -> Unit, deadline: Long, focusNow: Long, start: (String, String, Int) -> Unit, stop: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val isRunning = context.getSharedPreferences("aura_native", 0).getBoolean("focus_running", false)
     val remaining = ((deadline - focusNow).coerceAtLeast(0) / 1000).toInt()
-    var waterReminderVisible by remember { mutableStateOf(false) }
-    val waterReminderCount = context.getSharedPreferences("aura_native", 0).getInt("water_reminder_count", 0)
-    var lastSeenWaterReminder by remember { mutableIntStateOf(waterReminderCount) }
-    LaunchedEffect(waterReminderCount, isRunning) {
-        if (isRunning && waterReminderCount > lastSeenWaterReminder) {
-            lastSeenWaterReminder = waterReminderCount
-            waterReminderVisible = true
-            delay(8_000)
-            waterReminderVisible = false
-        }
-    }
     if (isRunning) {
         val clock = LocalDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm"))
         Column(Modifier.fillMaxSize().background(Color.Black).padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.SpaceEvenly) {
             Text(clock, color = Color(0xFFB9B9B9), fontSize = 22.sp, letterSpacing = 3.sp, fontWeight = FontWeight.Light)
             StudyingCharacter()
-            androidx.compose.animation.AnimatedVisibility(visible = waterReminderVisible) { WaterReminderAnimation() }
             Text("%02d:%02d".format(remaining / 60, remaining % 60), color = Color.White, fontSize = 76.sp, fontWeight = FontWeight.Light, letterSpacing = 2.sp)
             TextButton(onClick = stop) { Text("END FOCUS SESSION", color = Color(0xFFFFA6B7), fontSize = 11.sp, letterSpacing = 1.5.sp) }
         }
@@ -415,7 +379,7 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
         if (isRunning) {
             Text(context.getSharedPreferences("aura_native", 0).getString("focus_subject", "Study session").orEmpty(), color = Muted)
             Button(onClick = stop, modifier = Modifier.fillMaxWidth().padding(top = 25.dp)) { Text("End focus") }
-            Text("Timer keeps running if you switch apps or turn off your screen. AURA does not track which apps you open.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp, modifier = Modifier.padding(top = 12.dp))
+            Text("The timer continues while AURA is in the background or the screen is off. AURA does not monitor which apps you open.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp, modifier = Modifier.padding(top = 12.dp))
         } else {
             Text("Choose a subject", color = Muted, modifier = Modifier.align(Alignment.Start))
             var expanded by remember { mutableStateOf(false) }
@@ -429,22 +393,8 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                 Text("$minutes min", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(horizontal = 18.dp))
                 IconButton(onClick = { setMinutes((minutes + 5).coerceAtMost(180)) }) { Icon(Icons.Default.Add, "Longer") }
             }
-            Text("Water reminder", color = Muted, modifier = Modifier.align(Alignment.Start))
-            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 6.dp, bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                listOf(15, 20, 30, 45, 60, 90).forEach { interval ->
-                    FilterChip(selected = waterInterval == interval, onClick = { setWaterInterval(interval) }, label = { Text("$interval min") })
-                }
-            }
             Button(onClick = { subjectList.firstOrNull { it.optString("id") == selected }?.let { start(selected, it.optString("name"), minutes) } }, enabled = selected.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Start focus session") }
-            val notificationBlockerEnabled = FocusNotificationListener.isEnabled(context)
-            Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) {
-                Column(Modifier.fillMaxWidth().padding(14.dp)) {
-                    Text(if (notificationBlockerEnabled) "Social notification blocker is on" else "Mute social app notifications", fontWeight = FontWeight.SemiBold)
-                    Text(if (notificationBlockerEnabled) "Notifications from selected social apps are dismissed while Focus is active." else "Enable AURA under Notification access so social app alerts can be silenced during Focus.", color = Muted, fontSize = 11.sp, lineHeight = 15.sp, modifier = Modifier.padding(top = 4.dp))
-                    if (!notificationBlockerEnabled) TextButton(onClick = { runCatching { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) } }) { Text("Open Notification access settings") }
-                }
-            }
-            Text("Focus can run anytime and stays active when you switch apps or lock your screen. AURA does not monitor app usage. Water reminders appear at your chosen interval; social notification muting is optional.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp, modifier = Modifier.padding(top = 8.dp))
+            Text("AURA runs a native timer with a notification and does not monitor app usage during focus.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp, modifier = Modifier.padding(top = 12.dp))
         }
     }
 }
@@ -589,6 +539,7 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
     val subjects = planner.optJSONArray("subjects") ?: JSONArray()
     val schedule = planner.optJSONArray("schedule") ?: JSONArray()
     var subjectDialog by remember { mutableStateOf(false) }
+    var subjectToDelete by remember { mutableStateOf<JSONObject?>(null) }
     var subjectToEdit by remember { mutableStateOf<String?>(null) }
     var subjectName by remember { mutableStateOf("") }
     var subjectTeacher by remember { mutableStateOf("") }
@@ -623,16 +574,16 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                 val logs = (0 until studyLogs.length()).mapNotNull { studyLogs.optJSONObject(it) }.filter { it.optString("subjectId") == subject.optString("id") }
                 val todayMinutes = logs.filter { it.optString("date") == LocalDate.now().toString() }.sumOf { it.optInt("minutes") }
                 val totalMinutes = logs.sumOf { it.optInt("minutes") }
-                val subjectAttendance = (0 until attendance.length()).mapNotNull { attendance.optJSONObject(it) }.filter { it.optString("subjectId") == subject.optString("id") || it.optString("subjectName").equals(subject.optString("name"), true) }
+                val subjectAttendance = (0 until attendance.length()).mapNotNull { attendance.optJSONObject(it) }
+                    .filter { it.optString("subjectId") == subject.optString("id") || it.optString("subjectName").equals(subject.optString("name"), true) }
                 val presentCount = subjectAttendance.count { it.optString("status") == "present" }
-                val absentCount = subjectAttendance.count { it.optString("status") == "absent" }
-                val markedCount = presentCount + absentCount
+                val markedCount = subjectAttendance.count { it.optString("status") == "present" || it.optString("status") == "absent" }
                 val attendancePercent = if (markedCount > 0) (presentCount * 100f / markedCount).toInt() else 0
-                val classesNeededFor75 = if (attendancePercent >= 75 || markedCount == 0) 0 else kotlin.math.ceil((0.75 * markedCount - presentCount) / 0.25).toInt().coerceAtLeast(0)
                 Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) { Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.size(12.dp).background(runCatching { Color(android.graphics.Color.parseColor(subject.optString("color", "#B5A9FF"))) }.getOrDefault(Purple), CircleShape))
-                    Column(Modifier.weight(1f).padding(start = 12.dp)) { Text(subject.optString("name"), fontWeight = FontWeight.SemiBold); Text("Today ${formatStudyTime(todayMinutes)} · Total ${formatStudyTime(totalMinutes)}", color = Muted, fontSize = 11.sp); Text(if (markedCount == 0) "Attendance · no classes marked" else "Attendance · $attendancePercent% ($presentCount/$markedCount) · 75% target", color = if (markedCount > 0 && attendancePercent < 75) Color(0xFFFFB98A) else Muted, fontSize = 10.sp); if (markedCount > 0 && classesNeededFor75 > 0) Text("Attend next $classesNeededFor75 classes to reach 75%", color = Muted, fontSize = 10.sp); if (subject.optString("teacher").isNotBlank()) Text(subject.optString("teacher"), color = Muted, fontSize = 10.sp) }
+                    Column(Modifier.weight(1f).padding(start = 12.dp)) { Text(subject.optString("name"), fontWeight = FontWeight.SemiBold); Text("Today ${formatStudyTime(todayMinutes)} · Total ${formatStudyTime(totalMinutes)}", color = Muted, fontSize = 11.sp); Text(if (markedCount == 0) "Attendance · no classes marked" else "Attendance · $attendancePercent% ($presentCount/$markedCount)", color = Muted, fontSize = 10.sp); if (subject.optString("teacher").isNotBlank()) Text(subject.optString("teacher"), color = Muted, fontSize = 10.sp) }
                     TextButton(onClick = { subjectToEdit = subject.optString("id"); subjectName = subject.optString("name"); subjectTeacher = subject.optString("teacher"); subjectColor = subject.optString("color", "#8B7CF6"); subjectDialog = true }) { Text("Edit") }
+                    IconButton(onClick = { subjectToDelete = JSONObject(subject.toString()) }) { Icon(Icons.Default.DeleteOutline, "Delete subject", tint = Color(0xFFFF8D8D)) }
                 } }
             }
         }
@@ -647,22 +598,10 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                     Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(subjectName, fontWeight = FontWeight.SemiBold); Text("${entries.size} class time${if (entries.size == 1) "" else "s"}${if (entries.any { it.optBoolean("reminderEnabled") }) " · start beep on" else ""}", color = Muted, fontSize = 10.sp) }; Text(if (expanded) "⌃" else "⌄", color = Purple, fontSize = 20.sp) }
                     if (expanded) {
                         entries.sortedWith(compareBy({ it.optJSONArray("days")?.joinInts().orEmpty() }, { it.optString("start") })).forEach { entry ->
-                            Column(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
-                                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                    Column(Modifier.weight(1f)) { Text("${entry.optJSONArray("days")?.weekdayLabels() ?: entry.optString("date")} · ${entry.optString("start")}–${entry.optString("end")}", fontSize = 12.sp); if (entry.optString("date").isNotBlank()) Text(entry.optString("date"), color = Muted, fontSize = 10.sp) }
-                                    TextButton(onClick = { routineToEdit = entry.optString("id"); routineTitle = subjectName; routineStart = entry.optString("start"); routineEnd = entry.optString("end"); routineDate = entry.optString("date"); routineDays = entry.optJSONArray("days")?.joinInts().orEmpty(); routineReminder = entry.optBoolean("reminderEnabled"); routineReminderInterval = 0; routineDialog = true }) { Text("Edit") }
-                                    IconButton(onClick = { val updated = JSONArray(); for (i in 0 until schedule.length()) schedule.optJSONObject(i)?.takeIf { it.optString("id") != entry.optString("id") }?.let(updated::put); saveSchedule(updated) }) { Icon(Icons.Default.DeleteOutline, "Delete class time", tint = Color(0xFFFF8D8D)) }
-                                }
-                                if (classOccursOnDate(entry, LocalDate.now())) {
-                                    val todayKey = LocalDate.now().toString()
-                                    val marked = (0 until attendance.length()).mapNotNull { attendance.optJSONObject(it) }.firstOrNull { it.optString("classId") == entry.optString("id") && it.optString("date") == todayKey }?.optString("status")
-                                    if (marked != null) Text("Today: ${if (marked == "present") "Present" else "Absent"}", color = if (marked == "present") Color(0xFF83D6C4) else Color(0xFFFF8D8D), fontSize = 11.sp, modifier = Modifier.padding(start = 6.dp))
-                                    else Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text("Mark today:", color = Muted, fontSize = 10.sp)
-                                        TextButton(onClick = { save(recordClassAttendance(planner, entry.optString("subjectId"), subjectName, entry.optString("id"), todayKey, "present")) }) { Text("Present", color = Color(0xFF83D6C4)) }
-                                        TextButton(onClick = { save(recordClassAttendance(planner, entry.optString("subjectId"), subjectName, entry.optString("id"), todayKey, "absent")) }) { Text("Absent", color = Color(0xFFFF8D8D)) }
-                                    }
-                                }
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) { Text("${entry.optJSONArray("days")?.weekdayLabels() ?: entry.optString("date")} · ${entry.optString("start")}–${entry.optString("end")}", fontSize = 12.sp); if (entry.optString("date").isNotBlank()) Text(entry.optString("date"), color = Muted, fontSize = 10.sp) }
+                                TextButton(onClick = { routineToEdit = entry.optString("id"); routineTitle = subjectName; routineStart = entry.optString("start"); routineEnd = entry.optString("end"); routineDate = entry.optString("date"); routineDays = entry.optJSONArray("days")?.joinInts().orEmpty(); routineReminder = entry.optBoolean("reminderEnabled"); routineReminderInterval = 0; routineDialog = true }) { Text("Edit") }
+                                IconButton(onClick = { val updated = JSONArray(); for (i in 0 until schedule.length()) schedule.optJSONObject(i)?.takeIf { it.optString("id") != entry.optString("id") }?.let(updated::put); saveSchedule(updated) }) { Icon(Icons.Default.DeleteOutline, "Delete class time", tint = Color(0xFFFF8D8D)) }
                             }
                         }
                         TextButton(onClick = { routineToEdit = null; routineTitle = subjectName; routineStart = "09:00"; routineEnd = "10:00"; routineDate = ""; routineDays = (LocalDate.now().dayOfWeek.value % 7).toString(); routineReminder = false; routineReminderInterval = 0; routineDialog = true }) { Text("+ Add class time") }
@@ -691,6 +630,34 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
             save(JSONObject(planner.toString()).put("studyLogs", updated)); logStudyDialog = false
         }
     }, enabled = studyLogMinutes.toIntOrNull() in 1..1440 && studyLogSubject.isNotBlank()) { Text("Save") } }, dismissButton = { TextButton(onClick = { logStudyDialog = false }) { Text("Cancel") } })
+
+    subjectToDelete?.let { doomed ->
+        AlertDialog(
+            onDismissRequest = { subjectToDelete = null },
+            title = { Text("Delete ${doomed.optString("name")}?" ) },
+            text = { Text("This also removes its class times, study logs, and saved attendance from this planner.") },
+            confirmButton = { TextButton(onClick = {
+                val id = doomed.optString("id")
+                val name = doomed.optString("name")
+                val next = JSONObject(planner.toString())
+                fun filtered(key: String, keep: (JSONObject) -> Boolean): JSONArray {
+                    val source = planner.optJSONArray(key) ?: JSONArray()
+                    val result = JSONArray()
+                    for (i in 0 until source.length()) source.optJSONObject(i)?.takeIf(keep)?.let(result::put)
+                    return result
+                }
+                next.put("subjects", filtered("subjects") { it.optString("id") != id })
+                next.put("schedule", filtered("schedule") { entry ->
+                    entry.optString("subjectId") != id && !(entry.optString("subjectId").isBlank() && entry.optString("title").equals(name, true))
+                })
+                next.put("studyLogs", filtered("studyLogs") { it.optString("subjectId") != id })
+                next.put("attendance", filtered("attendance") { it.optString("subjectId") != id && !it.optString("subjectName").equals(name, true) })
+                save(next)
+                subjectToDelete = null
+            }) { Text("Delete", color = Color(0xFFFF8D8D)) } },
+            dismissButton = { TextButton(onClick = { subjectToDelete = null }) { Text("Cancel") } }
+        )
+    }
 
     if (subjectDialog) AlertDialog(onDismissRequest = { subjectDialog = false }, title = { Text(if (subjectToEdit == null) "Add subject" else "Edit subject") }, text = {
         Column {
@@ -736,20 +703,8 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
         val validDate = routineDate.isBlank() || (routineDate.matches(Regex("\\d{4}-\\d{2}-\\d{2}") ) && runCatching { LocalDate.parse(routineDate) }.isSuccess)
         if ((routineDate.isNotBlank() || days.isNotEmpty()) && validDate && routineStart.matches(Regex("([01]\\d|2[0-3]):[0-5]\\d")) && routineEnd.matches(Regex("([01]\\d|2[0-3]):[0-5]\\d"))) {
             val updated = JSONArray(); for (i in 0 until schedule.length()) { val old = schedule.optJSONObject(i) ?: continue; if (old.optString("id") != id) updated.put(old) }
-            val next = JSONObject(planner.toString())
-            val nextSubjects = JSONArray()
-            for (i in 0 until subjects.length()) subjects.optJSONObject(i)?.let(nextSubjects::put)
-            val oldEntry = (0 until schedule.length()).mapNotNull { schedule.optJSONObject(it) }.firstOrNull { it.optString("id") == id }
-            var subjectId = oldEntry?.optString("subjectId").orEmpty().ifBlank { (0 until nextSubjects.length()).mapNotNull { nextSubjects.optJSONObject(it) }.firstOrNull { it.optString("name").equals(routineTitle.trim(), true) }?.optString("id").orEmpty() }
-            if (subjectId.isBlank()) {
-                subjectId = "class_subject_${routineTitle.trim().lowercase().replace(Regex("[^a-z0-9]+"), "_")}"
-                nextSubjects.put(JSONObject().put("id", subjectId).put("name", routineTitle.trim()).put("teacher", "").put("color", "#8B7CF6").put("notes", ""))
-            } else if (oldEntry != null && oldEntry.optString("title") != routineTitle.trim()) {
-                for (i in 0 until nextSubjects.length()) nextSubjects.optJSONObject(i)?.takeIf { it.optString("id") == subjectId }?.put("name", routineTitle.trim())
-            }
-            updated.put(JSONObject().put("id", id).put("title", routineTitle.trim()).put("subjectId", subjectId).put("days", JSONArray(days)).put("date", routineDate.trim()).put("overrideWeekday", routineDate.isNotBlank()).put("start", routineStart).put("end", routineEnd).put("kind", "Class").put("reminderEnabled", routineReminder).put("reminderIntervalMinutes", routineReminderInterval))
-            next.put("subjects", nextSubjects).put("schedule", updated)
-            save(next); routineDialog = false
+            updated.put(JSONObject().put("id", id).put("title", routineTitle.trim()).put("subjectId", "").put("days", JSONArray(days)).put("date", routineDate.trim()).put("overrideWeekday", routineDate.isNotBlank()).put("start", routineStart).put("end", routineEnd).put("kind", "Class").put("reminderEnabled", routineReminder).put("reminderIntervalMinutes", routineReminderInterval))
+            saveSchedule(updated); routineDialog = false
         }
     }, enabled = routineTitle.trim().isNotEmpty() && (routineDate.isNotBlank() || routineDays.split(",").any { it.trim().toIntOrNull()?.let { day -> day in 0..6 } == true })) { Text("Save class") } }, dismissButton = { TextButton(onClick = { routineDialog = false }) { Text("Cancel") } })
 }
@@ -791,7 +746,7 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
             LinkRow("Personal Instagram", "@aryant1wari", "https://www.instagram.com/aryant1wari/", context)
             LinkRow("Email", "aryantiwari90605@gmail.com", "mailto:aryantiwari90605@gmail.com", context)
         } }
-        item { InfoCard("Device features", "Add the AURA points and day-streak widget from your Android home screen: long-press the home screen, choose Widgets, then select AURA. The focus timer runs while you switch apps or turn off the screen; AURA does not track app usage. Choose a water reminder interval before starting Focus. Social notification muting is optional. Scheduled task alarms and notifications are set in the Tasks tab. Android may ask for notification permission; exact task reminders may also require Alarms & reminders access. Alarms use Android’s alarm service and can ring while AURA is closed.") }
+        item { InfoCard("Device features", "Add the AURA points and day-streak widget from your Android home screen: long-press the home screen, choose Widgets, then select AURA. The focus timer continues with the screen off and does not monitor which apps you open. Scheduled task alarms and notifications are set in the Tasks tab. Android may ask for notification permission; exact Notification reminders may also require Alarms & reminders access. Alarms use Android’s alarm service and can ring while AURA is closed.") }
         item { InfoCard("Account", "Your sign-in stays saved on this device. Use Sign out only when you want to remove this account from the app.") {
             Button(onClick = onSignOut, modifier = Modifier.fillMaxWidth().padding(top = 12.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF392832))) { Text("Sign out of AURA") }
         } }
@@ -835,14 +790,6 @@ private fun SubjectStudyChart(subjects: JSONArray, logs: JSONArray) {
             }
         }
     }
-}
-
-private fun classOccursOnDate(entry: JSONObject, date: LocalDate): Boolean {
-    val specificDate = entry.optString("date")
-    if (specificDate.isNotBlank()) return specificDate == date.toString()
-    val days = entry.optJSONArray("days") ?: return false
-    val weekday = date.dayOfWeek.value % 7
-    return (0 until days.length()).any { days.optInt(it) == weekday }
 }
 
 private fun formatStudyTime(minutes: Int): String = if (minutes < 60) "${minutes}m" else "${minutes / 60}h ${minutes % 60}m"

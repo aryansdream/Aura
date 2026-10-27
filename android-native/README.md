@@ -22,14 +22,13 @@ Increment `versionCode` and `versionName` in `app/build.gradle.kts`, build the A
 - A home screen with Aura Points, day streak, and the interactive timetable.
 - A native focus timer with an ongoing notification. It continues when the display is off or the user switches apps; AURA does not track app usage. It awards points only for completed focus intervals.
 - A dedicated Subjects page with per-subject focus time and manual study logs. Manual logs are for tracking only and do not earn Aura Points.
-- Subject attendance totals, percentage, and an estimate of consecutive classes needed to reach the 75% target.
+- Delete a subject from its card; related class times, manual study logs, and attendance records are removed with confirmation.
+- Attendance controls on each class in the home timetable, with date navigation to record or change present/absent for today or another scheduled day. Subject cards show saved attendance totals and percentage.
 - Configurable animated water reminders and notifications during focus sessions.
 - A separate Classes timetable and one-time Tasks scheduler.
 - Each scheduled task can have no reminder, an Android notification, or a sounding Android alarm. Reminder alarms use Android's alarm service, survive app closure and device reboot, and are restored after time changes. Notification permissions and exact-reminder access may need to be enabled in Android settings.
 - No preset mission catalog or Life section.
 - A native Android home-screen widget for Aura Points and day streak.
-- Attendance controls on each class in the home timetable, with date navigation to record scheduled classes for other days.
 - A More page with the community leaderboard and AURA information/contact links.
-- Optional social notification muting during focus. It does not inspect app usage or restrict app launches.
-- A release notification checker that alerts once when a newer APK is published; users download and install it themselves.
+- Focus mode does not inspect app usage or restrict app launches.
 - Dark native interface with the infinity AURA logo and “Aura-Coz you need it!” tagline.

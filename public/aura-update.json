@@ -1,7 +1,7 @@
 {
-  "versionCode": 11,
-  "versionName": "1.1.8",
-  "apkUrl": "https://aura-day-tracker.vercel.app/aura-android-1.1.8.apk",
-  "sha256": "824ac1e632e04d066142f55b436d731e0a412e4f3df0d12e55e395f09dbc7dff",
-  "releaseNotes": "Restores the previously installable AURA Android APK (version 1.1.8)."
+  "versionCode": 12,
+  "versionName": "1.1.9",
+  "apkUrl": "https://aura-day-tracker.vercel.app/aura-android-1.1.9.apk",
+  "sha256": "7cf556dfdf5346dd81e45154437901b7b28188b24bbedc395af7ff5f8cc61a35",
+  "releaseNotes": "Adds subject deletion and editable present/absent attendance from the home timetable, using the installable 1.1.8 app as the base."
 }

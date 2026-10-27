@@ -9,7 +9,7 @@
       "headers": [{ "key": "Cache-Control", "value": "no-store, max-age=0" }]
     },
     {
-      "source": "/aura-android-1.1.8.apk",
+      "source": "/aura-android-1.1.9.apk",
       "headers": [{ "key": "Cache-Control", "value": "no-store, max-age=0" }]
     }
   ]
