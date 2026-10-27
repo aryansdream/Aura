@@ -280,7 +280,6 @@ object LanFocusSync {
                     }
                     if (kind == "media_pause") {
                         if (message.optString("targetDeviceId") != deviceId(prefs) ||
-                            !prefs.getBoolean("media_detection_enabled", false) ||
                             !prefs.getBoolean("media_auto_pause_enabled", false) ||
                             !prefs.getBoolean("focus_running", false)) continue
                         val packageName = message.optString("packageName")

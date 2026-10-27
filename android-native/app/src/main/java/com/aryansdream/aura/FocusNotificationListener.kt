@@ -51,7 +51,9 @@ class FocusNotificationListener : NotificationListenerService() {
 
     private fun scanActiveMedia() {
         val prefs = getSharedPreferences("aura_native", MODE_PRIVATE)
-        if (!prefs.getBoolean("media_detection_enabled", false) || !prefs.getBoolean("focus_running", false)) {
+        val shareWithSync = prefs.getBoolean("media_detection_enabled", false)
+        val pauseLocally = prefs.getBoolean("media_auto_pause_enabled", false)
+        if ((!shareWithSync && !pauseLocally) || !prefs.getBoolean("focus_running", false)) {
             lastMediaSignatures.clear(); lastMediaSentAt.clear(); return
         }
         if (!isEnabled(this)) return
@@ -70,7 +72,7 @@ class FocusNotificationListener : NotificationListenerService() {
                 val signature = "$packageName|$title|$artist"
                 currentSignatures.add(signature)
                 val now = System.currentTimeMillis()
-                if (prefs.getBoolean("media_auto_pause_enabled", false)) {
+                if (pauseLocally) {
                     val result = LocalMediaClassifier.classify("$packageName $title $artist")
                     if (result.category == "entertainment" && result.confidence >= 0.76 &&
                         now - (lastLocalPauseAt[signature] ?: 0L) >= 10_000L) {

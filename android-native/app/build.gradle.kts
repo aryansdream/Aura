@@ -12,7 +12,7 @@ android {
         applicationId = "com.aryansdream.aura"
         minSdk = 26
         targetSdk = 36
-        versionCode = 29
+        versionCode = 31
         versionName = "1.4.3"
     }
 
@@ -42,5 +42,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
     implementation("androidx.work:work-runtime-ktx:2.9.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation("com.google.mlkit:image-labeling:17.0.9")
+    implementation("com.google.mediapipe:tasks-audio:0.10.14")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

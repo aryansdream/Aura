@@ -26,7 +26,7 @@ Increment `versionCode` and `versionName` in `app/build.gradle.kts`, build the A
 - A dedicated Subjects page with per-subject focus time and manual study logs. Manual logs are for tracking only and do not earn Aura Points.
 - Delete a subject from its card; related class times, manual study logs, and attendance records are removed with confirmation.
 - Attendance controls on each class in the home timetable, with date navigation to record or change present/absent for today or another scheduled day. Subject cards show saved attendance totals and percentage.
-- Configurable water reminders (15–90 minutes) during focus sessions, with an animated in-app water break and a notification when AURA is in the background.
+- Configurable water reminders (5–90 minutes) during focus sessions, with an animated in-app water break and a notification when AURA is in the background.
 - An update notice checks the published release metadata on app launch and periodically, then sends a notification linking to the APK download page. It never silently downloads or installs an update.
 - A separate Classes timetable and one-time Tasks scheduler.
 - Each scheduled task can have no reminder, an Android notification, or a sounding Android alarm. Reminder alarms use Android's alarm service, survive app closure and device reboot, and are restored after time changes. Notification permissions and exact-reminder access may need to be enabled in Android settings.
@@ -34,7 +34,8 @@ Increment `versionCode` and `versionName` in `app/build.gradle.kts`, build the A
 - A native Android home-screen widget for Aura Points and day streak.
 - A More page with the community leaderboard and AURA information/contact links.
 - Same-account Aura Sync over local Wi-Fi or a phone hotspot without internet: focus sessions, Aura Point events, and clipboard text sync between Android and PC.
-- During focus, Android runs the small Naive Bayes media classifier locally against active player metadata. With “Pause and cover detected media” enabled, it pauses high-confidence entertainment and covers that app; no media metadata, audio, or screen image is sent to a server.
-- If “Share active media with Aura Sync” is enabled and Android Notification Access is granted, the phone can also send encrypted active media app/title metadata over the LAN. Aura Sync classifies it on the PC and can send pause commands back. The PC scans its own active players too; a Focus session on any paired Android device activates the ecosystem pause behavior.
+- More includes an optional audio/video content classifier. Android presents its own screen-capture consent prompt and a persistent notification while capture is enabled. During Focus, screen frames are labeled on device and permitted playback audio is classified with the bundled YAMNet model; raw frames/audio stay in memory and are neither saved nor sent. A high-confidence entertainment signal activates the Accessibility overlay, which uses Android cross-window blur where supported and an opaque cover otherwise. Some apps opt out of playback capture, and secure screens cannot be captured.
+- “Share player details with Aura Sync” is independent of the audio/video classifier. When enabled with Android Notification Access, the phone sends encrypted player/title metadata over the LAN; it does not stream audio or video. Aura Sync classifies metadata locally on the PC and can send pause commands back. The PC scans its own active player metadata too.
+- The Subjects section shows daily study totals by subject, with Focus-timer time separated from manual study logs. Only Focus time earns Aura Points.
 - AURA does not request Android Usage Access. Optional social app blocking uses Accessibility and optional notification blocking uses Notification Access; both are disabled until the user turns them on and grants access.
 - Dark native interface with the infinity AURA logo and “Aura-Coz you need it!” tagline.

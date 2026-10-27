@@ -1,9 +1,9 @@
 {
-  "versionCode": 29,
+  "versionCode": 31,
   "versionName": "1.4.3",
   "apkUrl": "https://aura-day-tracker.vercel.app/aura-android-1.4.3-master.apk",
-  "sha256": "8dec999dc4dfea25b96dea2518c474127665a427297de323211b39b995cc8afa",
-  "releaseNotes": "Aura Ecosystem 1.4.3: lightweight on-phone Naive Bayes classification of active player metadata during Focus, local pause and cover for likely entertainment, and cross-device Focus enforcement with Aura Sync.",
+  "sha256": "baa6fd9cabe894ae064fd201d3b5e40cfc270ca6233db1242802d8592a9f723e",
+  "releaseNotes": "Aura Ecosystem 1.4.3 build 31: on-device screen-video and permitted playback-audio classification during Focus, with blur/cover for likely entertainment. Audio/video stay on device; Aura Sync sharing remains player/title metadata only. Includes per-subject daily study logs with Focus and manual time separated.",
   "defaultVersionName": "1.4.0",
   "defaultApkUrl": "https://aura-day-tracker.vercel.app/aura-android-1.4.0-master.apk"
 }

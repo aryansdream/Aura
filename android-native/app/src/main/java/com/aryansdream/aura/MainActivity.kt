@@ -3,6 +3,7 @@ package com.aryansdream.aura
 import android.app.DatePickerDialog
 import android.app.TimePickerDialog
 import android.app.AlarmManager
+import android.app.Activity
 import android.Manifest
 import android.content.ClipboardManager
 import android.content.ClipData
@@ -135,6 +136,41 @@ class MainActivity : ComponentActivity() {
         Thread { runCatching { AppUpdater.checkAndNotify(applicationContext) } }.start()
         setContent {
             val prefs = remember { getSharedPreferences("aura_native", MODE_PRIVATE) }
+            var projectionGrant by remember { mutableStateOf<Intent?>(null) }
+            var projectionResultCode by remember { mutableIntStateOf(0) }
+            fun startMediaCapture() {
+                val data = projectionGrant ?: return
+                val captureIntent = Intent(this@MainActivity, FocusMediaCaptureService::class.java)
+                    .putExtra(FocusMediaCaptureService.EXTRA_RESULT_CODE, projectionResultCode)
+                    .putExtra(FocusMediaCaptureService.EXTRA_RESULT_DATA, data)
+                runCatching {
+                    if (Build.VERSION.SDK_INT >= 26) startForegroundService(captureIntent) else startService(captureIntent)
+                }.onFailure {
+                    prefs.edit().putBoolean("av_classifier_enabled", false).putBoolean("media_auto_pause_enabled", false).apply()
+                    android.widget.Toast.makeText(this@MainActivity, "Android could not start the local media classifier.", android.widget.Toast.LENGTH_LONG).show()
+                }
+            }
+            val audioPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+                prefs.edit().putBoolean("audio_classifier_audio_permission", granted).apply()
+                if (granted) startMediaCapture()
+                else {
+                    prefs.edit().putBoolean("audio_classifier_audio_permission", false).apply()
+                    android.widget.Toast.makeText(this@MainActivity, "Audio capture was declined. AURA will classify screen video only.", android.widget.Toast.LENGTH_LONG).show()
+                    startMediaCapture()
+                }
+            }
+            val projectionConsentLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+                if (result.resultCode == Activity.RESULT_OK && result.data != null) {
+                    projectionResultCode = result.resultCode
+                    projectionGrant = result.data
+                    if (Build.VERSION.SDK_INT >= 29 && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                        audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    } else startMediaCapture()
+                } else {
+                    prefs.edit().putBoolean("av_classifier_enabled", false).putBoolean("media_auto_pause_enabled", false).apply()
+                    android.widget.Toast.makeText(this@MainActivity, "Screen capture permission is needed for audio/video classification.", android.widget.Toast.LENGTH_LONG).show()
+                }
+            }
             var darkMode by remember { mutableStateOf(prefs.getBoolean("appearance_dark", true)) }
             val palette = if (darkMode) darkColorScheme(
                 primary = Color(0xFFC4B8FF), onPrimary = Color(0xFF21194A),
@@ -161,6 +197,15 @@ class MainActivity : ComponentActivity() {
                 AuraApp(
                     isDarkMode = darkMode,
                     onThemeChange = { darkMode = it; prefs.edit().putBoolean("appearance_dark", it).apply() },
+                    onContentClassifierToggle = { enabled ->
+                        prefs.edit().putBoolean("av_classifier_enabled", enabled).putBoolean("media_auto_pause_enabled", enabled).apply()
+                        if (enabled) {
+                            val manager = getSystemService(MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
+                            projectionConsentLauncher.launch(manager.createScreenCaptureIntent())
+                        } else {
+                            startService(Intent(this@MainActivity, FocusMediaCaptureService::class.java).setAction(FocusMediaCaptureService.ACTION_STOP))
+                        }
+                    },
                     onStartFocus = { subjectId, subject, minutes ->
                         val intent = Intent(this, FocusService::class.java).putExtra("subjectId", subjectId).putExtra("subject", subject).putExtra("duration", minutes * 60_000L).putExtra("session", java.util.UUID.randomUUID().toString())
                         if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
@@ -174,7 +219,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun AuraApp(isDarkMode: Boolean, onThemeChange: (Boolean) -> Unit, onStartFocus: (String, String, Int) -> Unit, onStopFocus: () -> Unit) {
+private fun AuraApp(isDarkMode: Boolean, onThemeChange: (Boolean) -> Unit, onContentClassifierToggle: (Boolean) -> Unit, onStartFocus: (String, String, Int) -> Unit, onStopFocus: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
     val localPrefs = remember { context.getSharedPreferences("aura_native", 0) }
@@ -339,8 +384,10 @@ private fun AuraApp(isDarkMode: Boolean, onThemeChange: (Boolean) -> Unit, onSta
                     }
                 }
                 "More" -> MorePage(
+                    context = context,
                     isDarkMode = isDarkMode,
                     onThemeChange = onThemeChange,
+                    onContentClassifierToggle = onContentClassifierToggle,
                     onTable = {
                         page = "Table"
                         scope.launch { leaderboard = withContext(Dispatchers.IO) { AuraApi.request(context, "/api/leaderboard").optJSONArray("entries") ?: JSONArray() } }
@@ -481,7 +528,6 @@ private fun AuraApp(isDarkMode: Boolean, onThemeChange: (Boolean) -> Unit, onSta
     var blockNotifications by remember { mutableStateOf(prefs.getBoolean("block_social_notifications", false)) }
     var clipboardSync by remember { mutableStateOf(prefs.getBoolean("lan_clipboard_sync", true)) }
     var mediaDetection by remember { mutableStateOf(prefs.getBoolean("media_detection_enabled", false)) }
-    var mediaAutoPause by remember { mutableStateOf(prefs.getBoolean("media_auto_pause_enabled", false)) }
     var waterReminderCount by remember { mutableIntStateOf(prefs.getInt("water_reminder_count", 0)) }
     var showWaterPrompt by remember { mutableStateOf(false) }
     var accessibilityEnabled by remember { mutableStateOf(FocusBlockAccessibilityService.isEnabled(context)) }
@@ -559,11 +605,9 @@ private fun AuraApp(isDarkMode: Boolean, onThemeChange: (Boolean) -> Unit, onSta
                     Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("Block social app notifications", fontWeight = FontWeight.Medium); Text("Mute their alerts during focus", color = Muted, fontSize = 10.sp) }; Switch(checked = blockNotifications, onCheckedChange = { blockNotifications = it; prefs.edit().putBoolean("block_social_notifications", it).apply() }) }
                     if (blockNotifications && !notificationListenerEnabled) TextButton(onClick = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }) { Text("Allow notification access") }
                     HorizontalDivider(color = Muted.copy(alpha = .2f))
-                    Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("Share active media with Aura Sync", fontWeight = FontWeight.Medium); Text("Only during Focus; sends player app and title over encrypted Wi‑Fi", color = Muted, fontSize = 10.sp) }; Switch(checked = mediaDetection, onCheckedChange = { enabled -> mediaDetection = enabled; prefs.edit().putBoolean("media_detection_enabled", enabled).apply(); if (enabled && !notificationListenerEnabled) context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }) }
+                    Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("Share player details with Aura Sync", fontWeight = FontWeight.Medium); Text("Player/title metadata only, during Focus over encrypted Wi‑Fi; no audio or video stream", color = Muted, fontSize = 10.sp) }; Switch(checked = mediaDetection, onCheckedChange = { enabled -> mediaDetection = enabled; prefs.edit().putBoolean("media_detection_enabled", enabled).apply(); if (enabled && !notificationListenerEnabled) context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }) }
                     if (mediaDetection && !notificationListenerEnabled) TextButton(onClick = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }) { Text("Allow media access in Notification access") }
-                    Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("Pause and cover detected media", fontWeight = FontWeight.Medium); Text("Aura can classify media on this phone; Aura Sync can classify PC and other connected media during Focus", color = Muted, fontSize = 10.sp) }; Switch(checked = mediaAutoPause, enabled = mediaDetection, onCheckedChange = { mediaAutoPause = it; prefs.edit().putBoolean("media_auto_pause_enabled", it).apply() }) }
-                    if (mediaAutoPause && !accessibilityEnabled) TextButton(onClick = { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) { Text("Enable AURA accessibility to cover the app") }
-                    Text("Aura classifies app/title metadata locally on this phone and can also share it encrypted with Aura Sync. During Focus, a confident entertainment result (76%+) can pause the player; Android covers that app only when Accessibility is enabled. No audio or screen images are read.", color = Muted, fontSize = 10.sp, lineHeight = 14.sp)
+                    Text("Audio/video classification and blur are managed in More. Aura Sync player details remain a separate, metadata-only option.", color = Muted, fontSize = 10.sp, lineHeight = 14.sp)
                     HorizontalDivider(color = Muted.copy(alpha = .2f))
                     Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("Aura Ecosystem clipboard", fontWeight = FontWeight.Medium); Text("Sync copied text across Aura devices on this Wi-Fi", color = Muted, fontSize = 10.sp) }; Switch(checked = clipboardSync, onCheckedChange = { clipboardSync = it; prefs.edit().putBoolean("lan_clipboard_sync", it).apply() }) }
                     Text("Clipboard sync is local to this Wi-Fi and keeps working without Aura’s server. Android only lets Aura read clipboard changes while Aura is open; sensitive clipboard items are skipped.", color = Muted, fontSize = 10.sp, lineHeight = 14.sp)
@@ -646,7 +690,17 @@ private fun AuraApp(isDarkMode: Boolean, onThemeChange: (Boolean) -> Unit, onSta
     }
 }
 
-@Composable private fun MorePage(isDarkMode: Boolean, onThemeChange: (Boolean) -> Unit, onTable: () -> Unit, onInfo: () -> Unit, onShare: () -> Unit, onBlocklist: () -> Unit) {
+@Composable private fun MorePage(context: Context, isDarkMode: Boolean, onThemeChange: (Boolean) -> Unit, onContentClassifierToggle: (Boolean) -> Unit, onTable: () -> Unit, onInfo: () -> Unit, onShare: () -> Unit, onBlocklist: () -> Unit) {
+    val prefs = remember { context.getSharedPreferences("aura_native", Context.MODE_PRIVATE) }
+    var classifierEnabled by remember { mutableStateOf(prefs.getBoolean("av_classifier_enabled", false)) }
+    var accessibilityAccess by remember { mutableStateOf(FocusBlockAccessibilityService.isEnabled(context)) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            classifierEnabled = prefs.getBoolean("av_classifier_enabled", false)
+            accessibilityAccess = FocusBlockAccessibilityService.isEnabled(context)
+            delay(1000)
+        }
+    }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         SectionTitle("More", "Your AURA, your way")
         Card(modifier = Modifier.pressScaleClickable(onShare), colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(24.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Purple.copy(alpha = .18f))) {
@@ -676,6 +730,27 @@ private fun AuraApp(isDarkMode: Boolean, onThemeChange: (Boolean) -> Unit, onSta
             }
         }
         MoreLinkCard("App blocklist", "Choose apps to pause during Focus", Icons.Default.Block, onBlocklist)
+        Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(22.dp)) {
+            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Psychology, null, tint = Purple)
+                    Column(Modifier.weight(1f).padding(start = 12.dp, end = 8.dp)) {
+                        Text("Audio & video classifier", fontWeight = FontWeight.SemiBold)
+                        Text("Audio + screen video · blur entertainment in Focus", color = Muted, fontSize = 11.sp)
+                    }
+                    Switch(checked = classifierEnabled, onCheckedChange = { enabled ->
+                        classifierEnabled = enabled
+                        onContentClassifierToggle(enabled)
+                    })
+                }
+                Text("When enabled, Android asks for screen-capture consent and shows an ongoing notification. AURA classifies screen frames and permitted playback audio on this phone; raw media is kept only in memory and is not sent or saved. Blocking runs during Focus. Some players disable audio capture. Blur requires AURA Accessibility access; Android uses an opaque cover if cross-window blur is unavailable.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
+                if (classifierEnabled && !accessibilityAccess) {
+                    HorizontalDivider(color = Muted.copy(alpha = .2f))
+                    Text("Enable AURA Accessibility to show the blur/cover over other apps.", color = Color(0xFFFFC77D), fontSize = 11.sp)
+                    TextButton(onClick = { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) { Text("Open Accessibility settings") }
+                }
+            }
+        }
         MoreLinkCard("Common table", "See the community leaderboard", Icons.Default.Leaderboard, onTable)
         MoreLinkCard("About AURA", "Point rules, app details and connect", Icons.Default.Info, onInfo)
         Text("Aura Ecosystem · Local Wi‑Fi works without mobile data after setup", color = Muted, fontSize = 11.sp, modifier = Modifier.fillMaxWidth().padding(top = 4.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
@@ -963,6 +1038,7 @@ private fun AuraApp(isDarkMode: Boolean, onThemeChange: (Boolean) -> Unit, onSta
     var routineReminder by remember { mutableStateOf(false) }
     var routineReminderInterval by remember { mutableIntStateOf(60) }
     val expandedClassSubjects = remember { mutableStateListOf<String>() }
+    val expandedStudySubjects = remember { mutableStateListOf<String>() }
     var logStudyDialog by remember { mutableStateOf(false) }
     var studyLogSubject by remember { mutableStateOf(subjects.optJSONObject(0)?.optString("id").orEmpty()) }
     var studyLogMinutes by remember { mutableStateOf("30") }
@@ -983,17 +1059,25 @@ private fun AuraApp(isDarkMode: Boolean, onThemeChange: (Boolean) -> Unit, onSta
                 val logs = (0 until studyLogs.length()).mapNotNull { studyLogs.optJSONObject(it) }.filter { it.optString("subjectId") == subject.optString("id") }
                 val todayMinutes = logs.filter { it.optString("date") == LocalDate.now().toString() }.sumOf { it.optInt("minutes") }
                 val totalMinutes = logs.sumOf { it.optInt("minutes") }
+                val subjectId = subject.optString("id")
+                val expanded = subjectId in expandedStudySubjects
                 val subjectAttendance = (0 until attendance.length()).mapNotNull { attendance.optJSONObject(it) }
                     .filter { it.optString("subjectId") == subject.optString("id") || it.optString("subjectName").equals(subject.optString("name"), true) }
                 val presentCount = subjectAttendance.count { it.optString("status") == "present" }
                 val markedCount = subjectAttendance.count { it.optString("status") == "present" || it.optString("status") == "absent" }
                 val attendancePercent = if (markedCount > 0) (presentCount * 100f / markedCount).toInt() else 0
-                Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) { Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.size(12.dp).background(runCatching { Color(android.graphics.Color.parseColor(subject.optString("color", "#B5A9FF"))) }.getOrDefault(Purple), CircleShape))
-                    Column(Modifier.weight(1f).padding(start = 12.dp)) { Text(subject.optString("name"), fontWeight = FontWeight.SemiBold); Text("Today ${formatStudyTime(todayMinutes)} · Total ${formatStudyTime(totalMinutes)}", color = Muted, fontSize = 11.sp); Text(if (markedCount == 0) "Attendance · no classes marked" else "Attendance · $attendancePercent% ($presentCount/$markedCount)", color = Muted, fontSize = 10.sp); if (subject.optString("teacher").isNotBlank()) Text(subject.optString("teacher"), color = Muted, fontSize = 10.sp) }
-                    TextButton(onClick = { subjectToEdit = subject.optString("id"); subjectName = subject.optString("name"); subjectTeacher = subject.optString("teacher"); subjectColor = subject.optString("color", "#8B7CF6"); subjectDialog = true }) { Text("Edit") }
-                    IconButton(onClick = { subjectToDelete = JSONObject(subject.toString()) }) { Icon(Icons.Default.DeleteOutline, "Delete subject", tint = Color(0xFFFF8D8D)) }
-                } }
+                Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.size(12.dp).background(runCatching { Color(android.graphics.Color.parseColor(subject.optString("color", "#B5A9FF"))) }.getOrDefault(Purple), CircleShape))
+                            Column(Modifier.weight(1f).padding(start = 12.dp)) { Text(subject.optString("name"), fontWeight = FontWeight.SemiBold); Text("Today ${formatStudyTime(todayMinutes)} · Total ${formatStudyTime(totalMinutes)}", color = Muted, fontSize = 11.sp); Text(if (markedCount == 0) "Attendance · no classes marked" else "Attendance · $attendancePercent% ($presentCount/$markedCount)", color = Muted, fontSize = 10.sp); if (subject.optString("teacher").isNotBlank()) Text(subject.optString("teacher"), color = Muted, fontSize = 10.sp) }
+                            TextButton(onClick = { subjectToEdit = subjectId; subjectName = subject.optString("name"); subjectTeacher = subject.optString("teacher"); subjectColor = subject.optString("color", "#8B7CF6"); subjectDialog = true }) { Text("Edit") }
+                            IconButton(onClick = { subjectToDelete = JSONObject(subject.toString()) }) { Icon(Icons.Default.DeleteOutline, "Delete subject", tint = Color(0xFFFF8D8D)) }
+                        }
+                        TextButton(onClick = { if (expanded) expandedStudySubjects.remove(subjectId) else expandedStudySubjects.add(subjectId) }, modifier = Modifier.align(Alignment.End).heightIn(min = 44.dp)) { Text(if (expanded) "Hide daily log" else "Daily study log  ↓", fontSize = 11.sp) }
+                        if (expanded) SubjectDailyStudyLog(logs)
+                    }
+                }
             }
         }
         if (mode == "Classes") {
@@ -1223,6 +1307,31 @@ private fun SubjectStudyChart(subjects: JSONArray, logs: JSONArray) {
                     Text("$sessions Focus session${if (sessions == 1) "" else "s"} · ${formatStudyTime(manual)} manual", color = Muted, fontSize = 10.sp)
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun SubjectDailyStudyLog(logs: List<JSONObject>) {
+    val byDay = logs.groupBy { it.optString("date") }
+        .filterKeys { it.matches(Regex("\\d{4}-\\d{2}-\\d{2}")) }
+        .toSortedMap(compareByDescending { it })
+        .entries.take(7)
+    HorizontalDivider(color = Muted.copy(alpha = .18f), modifier = Modifier.padding(top = 4.dp, bottom = 8.dp))
+    Text("DAILY STUDY TIME · LAST 7 DAYS", color = Muted, fontSize = 9.sp, letterSpacing = 1.sp)
+    if (byDay.isEmpty()) {
+        Text("No study time logged for this subject yet.", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 7.dp))
+        return
+    }
+    byDay.forEach { (date, dayLogs) ->
+        val focus = dayLogs.filter { it.optString("source") == "focus" }.sumOf { it.optInt("minutes").coerceAtLeast(0) }
+        val manual = dayLogs.filter { it.optString("source") != "focus" }.sumOf { it.optInt("minutes").coerceAtLeast(0) }
+        val label = runCatching { LocalDate.parse(date).format(DateTimeFormatter.ofPattern("EEE, MMM d")) }.getOrDefault(date)
+        Row(Modifier.fillMaxWidth().padding(top = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(label, Modifier.weight(1f), color = Color.White, fontSize = 11.sp)
+            Text("Focus ${formatStudyTime(focus)}", color = Purple, fontSize = 10.sp)
+            Spacer(Modifier.width(10.dp))
+            Text("Manual ${formatStudyTime(manual)}", color = Muted, fontSize = 10.sp)
         }
     }
 }
