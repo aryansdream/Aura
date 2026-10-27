@@ -389,7 +389,15 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                 IconButton(onClick = { setMinutes((minutes + 5).coerceAtMost(180)) }) { Icon(Icons.Default.Add, "Longer") }
             }
             Button(onClick = { subjectList.firstOrNull { it.optString("id") == selected }?.let { start(selected, it.optString("name"), minutes) } }, enabled = selected.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Start focus session") }
-            Text("AURA runs a native timer with a notification. ChatGPT, Gemini, YouTube, and other non-social apps are allowed during focus. Usage Access is needed to detect social apps and the home screen.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp, modifier = Modifier.padding(top = 12.dp))
+            val blockerEnabled = FocusBlockAccessibilityService.isEnabled(context)
+            Card(Modifier.fillMaxWidth().padding(top = 12.dp), colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) {
+                Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                    Text(if (blockerEnabled) "Social app blocker is on" else "Turn on social app blocking", fontWeight = FontWeight.SemiBold)
+                    Text(if (blockerEnabled) "Instagram and other selected social apps are covered while Focus is active." else "Android needs you to enable AURA in Accessibility settings before social apps can be blocked.", color = Muted, fontSize = 11.sp, lineHeight = 15.sp, modifier = Modifier.padding(top = 4.dp))
+                    if (!blockerEnabled) TextButton(onClick = { runCatching { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) } }) { Text("Open Accessibility settings") }
+                }
+            }
+            Text("ChatGPT, Gemini, YouTube, and other non-social apps stay available during Focus. AURA uses Accessibility only to detect and cover selected social apps while a focus session is active.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp, modifier = Modifier.padding(top = 8.dp))
         }
     }
 }
@@ -705,7 +713,7 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
             LinkRow("Personal Instagram", "@aryant1wari", "https://www.instagram.com/aryant1wari/", context)
             LinkRow("Email", "aryantiwari90605@gmail.com", "mailto:aryantiwari90605@gmail.com", context)
         } }
-        item { InfoCard("Device features", "Add the AURA points and day-streak widget from your Android home screen: long-press the home screen, choose Widgets, then select AURA. The focus timer continues with the screen off. ChatGPT, Gemini, YouTube, and other non-social apps are allowed during focus; opening social media or the home screen ends the timer. Scheduled task alarms and notifications are set in the Tasks tab. Android may ask for notification permission; exact Notification reminders may also require Alarms & reminders access. Alarms use Android’s alarm service and can ring while AURA is closed.") }
+        item { InfoCard("Device features", "Add the AURA points and day-streak widget from your Android home screen: long-press the home screen, choose Widgets, then select AURA. The focus timer continues with the screen off. ChatGPT, Gemini and YouTube stay available. Enable AURA in Android Accessibility settings to cover selected social apps while Focus runs. Scheduled task alarms and notifications are set in the Tasks tab. Android may ask for notification permission; exact Notification reminders may also require Alarms & reminders access. Alarms use Android’s alarm service and can ring while AURA is closed.") }
         item { InfoCard("Account", "Your sign-in stays saved on this device. Use Sign out only when you want to remove this account from the app.") {
             Button(onClick = onSignOut, modifier = Modifier.fillMaxWidth().padding(top = 12.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF392832))) { Text("Sign out of AURA") }
         } }

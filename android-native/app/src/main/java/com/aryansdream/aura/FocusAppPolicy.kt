@@ -15,6 +15,8 @@ object FocusAppPolicy {
         "com.threads.android", "com.reddit.frontpage", "com.pinterest"
     )
 
+    fun isDistracting(packageName: String?): Boolean = packageName != null && packageName in distractingPackages
+
     fun shouldEndFocus(context: Context): Boolean {
         // Without Usage Access Android has not told us which app is foregrounded;
         // preserve the timer instead of treating an unknown app as a violation.
@@ -37,6 +39,8 @@ object FocusAppPolicy {
         val homePackage = context.packageManager.resolveActivity(
             Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME), 0
         )?.activityInfo?.packageName
-        return foreground == context.packageName || foreground == homePackage || foreground in distractingPackages
+        val distracting = isDistracting(foreground)
+        val socialBlockerEnabled = FocusBlockAccessibilityService.isEnabled(context)
+        return foreground == context.packageName || foreground == homePackage || (distracting && !socialBlockerEnabled)
     }
 }
