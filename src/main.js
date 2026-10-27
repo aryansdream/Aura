@@ -517,14 +517,28 @@ function showAccount(data, options = {}) {
   state.total = Number(data.stats.total || 0);
   pending = 0;
   state.todayFocus = Number(data.stats.today || 0);
-  const days = data.days || [];
-  let streak = 0, expected = today();
-  for (const day of days) { if (day !== expected) break; streak++; const d = new Date(`${expected}T00:00:00Z`); d.setUTCDate(d.getUTCDate() - 1); expected = d.toISOString().slice(0,10); }
-  state.streak = streak;
+  state.streak = calculateStreak(data.days || [], today());
   $('displayName').value = state.name;
   save();
   refreshLeaderboard();
   window.setTimeout(showTomorrowPlan, 400);
+}
+function calculateStreak(days, currentDay) {
+  const earnedDays = new Set((Array.isArray(days) ? days : []).filter(day => /^\d{4}-\d{2}-\d{2}$/.test(day)));
+  let expected = currentDay;
+  if (!earnedDays.has(expected)) {
+    const yesterday = new Date(`${expected}T00:00:00Z`);
+    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+    expected = yesterday.toISOString().slice(0, 10);
+  }
+  let streak = 0;
+  while (earnedDays.has(expected)) {
+    streak++;
+    const previous = new Date(`${expected}T00:00:00Z`);
+    previous.setUTCDate(previous.getUTCDate() - 1);
+    expected = previous.toISOString().slice(0, 10);
+  }
+  return streak;
 }
 async function reloadAccount() {
   try { showAccount(await api('/api/me')); syncFocusAwards(); return true; }

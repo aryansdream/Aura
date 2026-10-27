@@ -79,6 +79,42 @@ object LanFocusSync {
         }
     }
 
+    /** Share one idempotent focus-point event to signed-in Aura devices on this Wi-Fi. */
+    fun hasSeenPointEvent(context: Context, eventId: String): Boolean =
+        context.getSharedPreferences("aura_native", Context.MODE_PRIVATE)
+            .getStringSet("lan_seen_point_events", emptySet()).orEmpty().contains(eventId)
+
+    fun publishPoint(context: Context, eventId: String, day: String, points: Int = 10) {
+        if (eventId.isBlank() || eventId.length > 100 || points !in 1..10 || !day.matches(Regex("\\d{4}-\\d{2}-\\d{2}"))) return
+        val app = context.applicationContext
+        val prefs = app.getSharedPreferences("aura_native", Context.MODE_PRIVATE)
+        val seen = HashSet(prefs.getStringSet("lan_seen_point_events", emptySet()).orEmpty())
+        if (!seen.add(eventId)) return
+        prefs.edit().putStringSet("lan_seen_point_events", seen.takeLast(4000).toSet()).apply()
+        executor.execute {
+            runCatching {
+                if (!isWifiConnected(app)) return@runCatching
+                val account = JSONObject(prefs.getString("account_cache", "{}") ?: "{}")
+                val userId = account.optJSONObject("user")?.optString("id").orEmpty()
+                val key = account.optJSONObject("profile")?.optString("lanSyncKey").orEmpty()
+                if (userId.isBlank() || key.length < 32) return@runCatching
+                val payload = JSONObject().put("kind", "point").put("accountId", userId)
+                    .put("deviceId", deviceId(prefs)).put("sentAt", System.currentTimeMillis())
+                    .put("eventId", eventId).put("day", day).put("points", points)
+                val body = payload.toString()
+                val envelope = JSONObject().put("payload", body).put("signature", sign(key, body))
+                val bytes = envelope.toString().toByteArray(Charsets.UTF_8)
+                DatagramSocket().use { socket ->
+                    socket.broadcast = true
+                    repeat(3) { attempt ->
+                        socket.send(DatagramPacket(bytes, bytes.size, broadcastAddress(app), PORT))
+                        if (attempt < 2) Thread.sleep(180)
+                    }
+                }
+            }
+        }
+    }
+
     private fun sendHello(context: Context) {
         runCatching {
             if (!isWifiConnected(context)) return@runCatching
@@ -174,6 +210,29 @@ object LanFocusSync {
                         prefs.edit().putString("lan_clipboard_text", text).putLong("lan_clipboard_at", clipAt)
                             .putString("lan_clipboard_origin", message.optString("origin")).apply()
                         context.sendBroadcast(Intent(ACTION_CLIPBOARD_CHANGED).setPackage(context.packageName))
+                        continue
+                    }
+                    if (kind == "point") {
+                        val eventId = message.optString("eventId")
+                        val day = message.optString("day")
+                        val points = message.optInt("points")
+                        if (eventId.isBlank() || eventId.length > 100 || !day.matches(Regex("\\d{4}-\\d{2}-\\d{2}")) || points !in 1..10) continue
+                        val seen = HashSet(prefs.getStringSet("lan_seen_point_events", emptySet()).orEmpty())
+                        if (!seen.add(eventId)) continue
+                        val cached = runCatching { JSONObject(prefs.getString("account_cache", "{}") ?: "{}") }.getOrDefault(JSONObject())
+                        val stats = cached.optJSONObject("stats") ?: JSONObject()
+                        stats.put("total", stats.optInt("total") + points)
+                        stats.put("completed", stats.optInt("completed") + 1)
+                        if (day == auraDay().toString()) stats.put("today", stats.optInt("today") + 1)
+                        cached.put("stats", stats)
+                        val days = cached.optJSONArray("days") ?: org.json.JSONArray()
+                        if ((0 until days.length()).none { days.optString(it) == day }) {
+                            val updatedDays = (0 until days.length()).map { days.optString(it) }.plus(day).distinct().sortedDescending()
+                            cached.put("days", org.json.JSONArray(updatedDays))
+                        }
+                        prefs.edit().putStringSet("lan_seen_point_events", seen.takeLast(4000).toSet())
+                            .putString("account_cache", cached.toString()).apply()
+                        AuraWidgetProvider.sync(context, cached)
                         continue
                     }
                     if (kind != "focus") continue

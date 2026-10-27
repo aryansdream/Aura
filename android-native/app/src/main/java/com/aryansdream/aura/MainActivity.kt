@@ -202,6 +202,7 @@ private fun AuraApp(isDarkMode: Boolean, onThemeChange: (Boolean) -> Unit, onSta
         onStopFocus()
         page = "Today"
     }
+    BackHandler(enabled = page != "Today" && !detailPage && !focusFullScreen) { page = "Today" }
     SideEffect {
         val activity = context as? ComponentActivity ?: return@SideEffect
         val controller = androidx.core.view.WindowCompat.getInsetsController(activity.window, activity.window.decorView)
@@ -314,7 +315,7 @@ private fun AuraApp(isDarkMode: Boolean, onThemeChange: (Boolean) -> Unit, onSta
                         Icon(Icons.Default.ArrowBack, contentDescription = "Back to More")
                         Spacer(Modifier.width(6.dp)); Text("More")
                     }
-                } else Row(verticalAlignment = Alignment.CenterVertically) { AuraBrandMark(Modifier.size(width = 62.dp, height = 46.dp)); Column(Modifier.padding(start = 8.dp)) { Text("AURA", color = Purple, fontWeight = FontWeight.Black, letterSpacing = 2.sp, fontSize = 15.sp); Text("Aura-Coz you need it!", color = Muted, fontSize = 10.sp) } }
+                } else Row(verticalAlignment = Alignment.CenterVertically) { AuraBrandMark(Modifier.size(width = 68.dp, height = 50.dp)); Column(Modifier.padding(start = 8.dp)) { Text("AURA", color = Purple, fontWeight = FontWeight.Black, letterSpacing = 2.sp, fontSize = 18.sp); Text("Aura-Coz you need it!", color = Muted, fontSize = 10.sp) } }
                 IconButton(onClick = { load() }) { Icon(Icons.Default.Refresh, "Refresh", tint = Muted) }
             }
             if (!focusFullScreen && error.isNotBlank()) Text(error, Modifier.padding(horizontal = 20.dp), color = Color(0xFFFF8D8D), fontSize = 12.sp)
@@ -381,11 +382,9 @@ private fun AuraApp(isDarkMode: Boolean, onThemeChange: (Boolean) -> Unit, onSta
 @Composable private fun HomePage(account: JSONObject?, planner: JSONObject, onOpenStudy: () -> Unit, saveAttendance: (JSONObject) -> Unit) {
     val stats = account?.optJSONObject("stats") ?: JSONObject()
     val earnedDays = (0 until (account?.optJSONArray("days")?.length() ?: 0)).mapNotNull { account?.optJSONArray("days")?.optString(it) }.toSet()
-    var streak = 0
-    var date = LocalDate.now()
-    while (earnedDays.contains(date.toString())) { streak++; date = date.minusDays(1) }
+    val streak = calculateStreak(earnedDays)
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(bottom = 24.dp)) {
-        item { Text("TODAY · ${LocalDate.now()}", color = Muted, fontSize = 10.sp, letterSpacing = 1.5.sp) }
+        item { Text("TODAY · ${auraDay()}", color = Muted, fontSize = 10.sp, letterSpacing = 1.5.sp) }
         item { Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(20.dp)) { Column(Modifier.fillMaxWidth().padding(20.dp)) { Text("YOUR AURA", color = Muted, fontSize = 10.sp, letterSpacing = 1.5.sp); Text(formatAuraPoints(stats.optInt("total")), fontSize = 42.sp, fontWeight = FontWeight.Black, color = Purple); Spacer(Modifier.height(14.dp)); Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Metric("DAY STREAK", "$streak ∞"); Metric("COMPLETED", "${stats.optInt("completed")}") } } } }
         item { HomeTimetable(planner, onOpenStudy, saveAttendance) }
 
@@ -500,10 +499,17 @@ private fun AuraApp(isDarkMode: Boolean, onThemeChange: (Boolean) -> Unit, onSta
     if (isRunning) {
         val clock = LocalDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm"))
         Column(Modifier.fillMaxSize().background(Color.Black).padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.SpaceEvenly) {
-            Text(clock, color = Color(0xFFB9B9B9), fontSize = 22.sp, letterSpacing = 3.sp, fontWeight = FontWeight.Light)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text(clock, color = Color(0xFFB9B9B9), fontSize = 22.sp, letterSpacing = 3.sp, fontWeight = FontWeight.Light)
+                Button(onClick = stop, modifier = Modifier.heightIn(min = 48.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF30232B), contentColor = Color(0xFFFFC2CC))) {
+                    Icon(Icons.Default.Stop, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("End session")
+                }
+            }
             StudyingCharacter()
             Text("%02d:%02d".format(remaining / 60, remaining % 60), color = Color.White, fontSize = 76.sp, fontWeight = FontWeight.Light, letterSpacing = 2.sp)
-            TextButton(onClick = stop) { Text("END FOCUS SESSION", color = Color(0xFFFFA6B7), fontSize = 11.sp, letterSpacing = 1.5.sp) }
+            Text("Focus stays active with the screen off", color = Color(0xFFB9B9B9), fontSize = 12.sp)
         }
     } else {
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 14.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -620,9 +626,9 @@ private fun AuraApp(isDarkMode: Boolean, onThemeChange: (Boolean) -> Unit, onSta
             }
             drawPath(p, Brush.linearGradient(listOf(Color(0xFF7565D6), Color(0xFFAAA0E9), Color(0xFF5B9F96))), style = Stroke(width = h * .13f, cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round))
         }
-        Text("AURA", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Black,
+        Text("AURA", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Black,
             letterSpacing = 1.3.sp, style = androidx.compose.ui.text.TextStyle(drawStyle = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.8f)))
-        Text("AURA", color = Color(0xCC05050A), fontSize = 14.sp, fontWeight = FontWeight.Black, letterSpacing = 1.3.sp)
+        Text("AURA", color = Color(0xCC05050A), fontSize = 18.sp, fontWeight = FontWeight.Black, letterSpacing = 1.3.sp)
     }
 }
 
@@ -993,7 +999,7 @@ private fun AuraApp(isDarkMode: Boolean, onThemeChange: (Boolean) -> Unit, onSta
             if (classGroups.isEmpty()) item { EmptyCard("Add a subject and its class times to see your timetable.") }
             items(classGroups.entries.toList(), key = { it.key }) { (subjectName, entries) ->
                 val expanded = subjectName in expandedClassSubjects
-                Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) { Column(Modifier.fillMaxWidth().clickable { if (expanded) expandedClassSubjects.remove(subjectName) else expandedClassSubjects.add(subjectName) }.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) { Column(Modifier.fillMaxWidth().heightIn(min = 48.dp).pressScaleClickable { if (expanded) expandedClassSubjects.remove(subjectName) else expandedClassSubjects.add(subjectName) }.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(subjectName, fontWeight = FontWeight.SemiBold); Text("${entries.size} class time${if (entries.size == 1) "" else "s"}${if (entries.any { it.optBoolean("reminderEnabled") }) " · start beep on" else ""}", color = Muted, fontSize = 10.sp) }; Text(if (expanded) "⌃" else "⌄", color = Purple, fontSize = 20.sp) }
                     if (expanded) {
                         entries.sortedWith(compareBy({ it.optJSONArray("days")?.joinInts().orEmpty() }, { it.optString("start") })).forEach { entry ->
@@ -1063,7 +1069,7 @@ private fun AuraApp(isDarkMode: Boolean, onThemeChange: (Boolean) -> Unit, onSta
             AuraField("Subject name", subjectName, { subjectName = it })
             AuraField("Teacher (optional)", subjectTeacher, { subjectTeacher = it })
             AuraField("Color · hex code", subjectColor, { subjectColor = it }, keyboard = KeyboardType.Ascii)
-            Row(horizontalArrangement = Arrangement.spacedBy(7.dp), modifier = Modifier.padding(top = 10.dp)) { listOf("#8B7CF6", "#54B8A7", "#E8886C", "#6E9CE7", "#D393C5", "#D2AE5F").forEach { color -> Box(Modifier.size(27.dp).background(Color(android.graphics.Color.parseColor(color)), CircleShape).clickable { subjectColor = color }) } }
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(top = 10.dp)) { listOf("#8B7CF6", "#54B8A7", "#E8886C", "#6E9CE7", "#D393C5", "#D2AE5F").forEach { color -> Box(Modifier.size(48.dp).pressScaleClickable { subjectColor = color }, contentAlignment = Alignment.Center) { Box(Modifier.size(27.dp).background(Color(android.graphics.Color.parseColor(color)), CircleShape).border(if (subjectColor == color) 2.dp else 0.dp, if (subjectColor == color) MaterialTheme.colorScheme.onSurface else Color.Transparent, CircleShape)) } } }
         }
     }, confirmButton = { TextButton(onClick = {
         val id = subjectToEdit ?: "s_${java.util.UUID.randomUUID()}"
@@ -1164,7 +1170,11 @@ private fun AuraApp(isDarkMode: Boolean, onThemeChange: (Boolean) -> Unit, onSta
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val scale by animateFloatAsState(if (motionEnabled && pressed) .97f else 1f, animationSpec = spring(stiffness = 700f), label = "touch-compression")
-    return this.graphicsLayer { scaleX = scale; scaleY = scale }.clickable(interactionSource = interaction, indication = LocalIndication.current, onClick = onClick)
+    val hapticView = LocalView.current
+    return this.graphicsLayer { scaleX = scale; scaleY = scale }.clickable(interactionSource = interaction, indication = LocalIndication.current) {
+        hapticView.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+        onClick()
+    }
 }
 @Composable private fun SectionTitle(title: String, sub: String) { Column(Modifier.padding(top = 6.dp, bottom = 2.dp)) { Text(title, fontSize = 22.sp, fontWeight = FontWeight.Bold); Text(sub.uppercase(), color = Muted, fontSize = 9.sp, letterSpacing = 1.2.sp) } }
 @Composable private fun EmptyCard(text: String) { Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) { Text(text, Modifier.fillMaxWidth().padding(16.dp), color = Muted, fontSize = 12.sp, lineHeight = 18.sp) } }

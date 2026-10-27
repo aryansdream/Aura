@@ -8,7 +8,6 @@ import android.content.Context
 import android.content.Intent
 import android.widget.RemoteViews
 import org.json.JSONObject
-import java.time.LocalDate
 
 class AuraWidgetProvider : AppWidgetProvider() {
     override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) {
@@ -22,9 +21,7 @@ class AuraWidgetProvider : AppWidgetProvider() {
             val stats = account.optJSONObject("stats") ?: JSONObject()
             val earnedDays = account.optJSONArray("days")
             val earned = (0 until (earnedDays?.length() ?: 0)).mapNotNull { earnedDays?.optString(it) }.toSet()
-            var streak = 0
-            var date = LocalDate.now()
-            while (earned.contains(date.toString())) { streak++; date = date.minusDays(1) }
+            val streak = calculateStreak(earned)
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                 .putString("widget_points", String.format(java.util.Locale.US, "%.2f", stats.optInt("total") / 100.0))
                 .putString("widget_streak", streak.toString())

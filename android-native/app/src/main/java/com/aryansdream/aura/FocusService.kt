@@ -108,6 +108,11 @@ class FocusService : Service() {
                 val completed = ((System.currentTimeMillis() - startedAt).coerceIn(0L, totalDuration) / 120_000L).toInt()
                 while (awarded < completed) {
                     awarded++
+                    val pointEventId = "$session:$awarded"
+                    if (LanFocusSync.hasSeenPointEvent(applicationContext, pointEventId)) {
+                        prefs.edit().putInt("focus_awarded", awarded).apply()
+                        continue
+                    }
                     val body = JSONObject().put("action", "focus-point").put("sessionId", session).put("segment", awarded).put("subjectId", subjectId)
                     val response = runCatching { AuraApi.request(applicationContext, "/api/planner", body) }
                     if (response.isSuccess) updateCachedPoints(response.getOrNull(), optimistic = false)
@@ -120,6 +125,7 @@ class FocusService : Service() {
                             updateCachedPoints(null, optimistic = true)
                         }
                     }
+                    LanFocusSync.publishPoint(applicationContext, pointEventId, auraDay().toString())
                     prefs.edit().putInt("focus_awarded", awarded).apply()
                 }
                 NotificationManagerCompatShim.notify(this@FocusService, NOTIFICATION, notification(remaining, subject))
@@ -145,7 +151,14 @@ class FocusService : Service() {
                 stats.put("today", stats.optInt("today") + 1)
             }
             cached.put("stats", stats)
+            val day = auraDay().toString()
+            val days = cached.optJSONArray("days") ?: org.json.JSONArray()
+            if ((0 until days.length()).none { days.optString(it) == day }) {
+                val updatedDays = (0 until days.length()).map { days.optString(it) }.plus(day).distinct().sortedDescending()
+                cached.put("days", org.json.JSONArray(updatedDays))
+            }
             prefs.edit().putString("account_cache", cached.toString()).apply()
+            AuraWidgetProvider.sync(this, cached)
         }
     }
 
