@@ -13,7 +13,6 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.NotificationManagerCompat
-import androidx.lifecycle.lifecycleScope
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
@@ -65,14 +64,10 @@ private val Purple = Color(0xFFB5A9FF)
 private val Muted = Color(0xFFA3A6B5)
 
 class MainActivity : ComponentActivity() {
-    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) lifecycleScope.launch { withContext(Dispatchers.IO) { runCatching { AppUpdater.checkAndNotify(this@MainActivity) } } }
-    }
+    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (Build.VERSION.SDK_INT >= 33) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-        AppUpdateScheduler.schedule(this)
-        lifecycleScope.launch { withContext(Dispatchers.IO) { runCatching { AppUpdater.checkAndNotify(this@MainActivity) } } }
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(primary = Purple, background = Night, surface = Surface, onBackground = Color(0xFFF4F2FC), onSurface = Color(0xFFF4F2FC), secondary = Color(0xFF83D6C4))) {
                 AuraApp(
@@ -229,7 +224,7 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
             if (!focusFullScreen && error.isNotBlank()) Text(error, Modifier.padding(horizontal = 20.dp), color = Color(0xFFFF8D8D), fontSize = 12.sp)
             if (!focusFullScreen && syncMessage.isNotBlank() && error.isBlank()) Text(syncMessage, Modifier.padding(horizontal = 20.dp), color = Color(0xFF83D6C4), fontSize = 11.sp)
             when (page) {
-                "Today" -> HomePage(account, planner, onOpenStudy = { page = "Classes" })
+                "Today" -> HomePage(account, planner, onOpenStudy = { page = "Classes" }, saveAttendance = { next -> saveNativePlanner(next, "Attendance saved and synced.") })
                 "Focus" -> FocusPage(planner.optJSONArray("subjects") ?: JSONArray(), subjectChoice, { subjectChoice = it }, focusMinutes, { focusMinutes = it }, localPrefs.getInt("water_interval_minutes", 30), { localPrefs.edit().putInt("water_interval_minutes", it).apply() }, context.getSharedPreferences("aura_native", 0).getLong("focus_deadline", 0), focusNow, onStartFocus, onStopFocus)
                 "Subjects" -> StudyPage(planner, "Subjects") { next -> saveNativePlanner(next, "Subjects saved and synced.") }
                 "Classes" -> StudyPage(planner, "Classes") { next -> saveNativePlanner(next, "Class timetable saved and synced.") }
@@ -279,7 +274,7 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
     }
 }
 
-@Composable private fun HomePage(account: JSONObject?, planner: JSONObject, onOpenStudy: () -> Unit) {
+@Composable private fun HomePage(account: JSONObject?, planner: JSONObject, onOpenStudy: () -> Unit, saveAttendance: (JSONObject) -> Unit) {
     val stats = account?.optJSONObject("stats") ?: JSONObject()
     val earnedDays = (0 until (account?.optJSONArray("days")?.length() ?: 0)).mapNotNull { account?.optJSONArray("days")?.optString(it) }.toSet()
     var streak = 0
@@ -288,13 +283,13 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(bottom = 24.dp)) {
         item { Text("TODAY · ${LocalDate.now()}", color = Muted, fontSize = 10.sp, letterSpacing = 1.5.sp) }
         item { Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(20.dp)) { Column(Modifier.fillMaxWidth().padding(20.dp)) { Text("YOUR AURA", color = Muted, fontSize = 10.sp, letterSpacing = 1.5.sp); Text(formatAuraPoints(stats.optInt("total")), fontSize = 42.sp, fontWeight = FontWeight.Black, color = Purple); Spacer(Modifier.height(14.dp)); Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Metric("DAY STREAK", "$streak ∞"); Metric("COMPLETED", "${stats.optInt("completed")}") } } } }
-        item { HomeTimetable(planner, onOpenStudy) }
+        item { HomeTimetable(planner, onOpenStudy, saveAttendance) }
 
     }
 
 }
 
-@Composable private fun HomeTimetable(planner: JSONObject, onOpenStudy: () -> Unit) {
+@Composable private fun HomeTimetable(planner: JSONObject, onOpenStudy: () -> Unit, saveAttendance: (JSONObject) -> Unit) {
     var selectedDate by remember { mutableStateOf(LocalDate.now()) }
     val schedule = planner.optJSONArray("schedule") ?: JSONArray()
     val subjects = planner.optJSONArray("subjects") ?: JSONArray()
@@ -329,21 +324,38 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                     }
                 }
             }
+            Text("Choose a date, then mark attendance below.", color = Muted, fontSize = 10.sp)
             if (blocks.isEmpty()) {
                 Text("No activities planned for this day.", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(vertical = 8.dp))
             } else {
                 blocks.forEach { entry ->
                     val subject = (0 until subjects.length()).mapNotNull { subjects.optJSONObject(it) }.firstOrNull { it.optString("id") == entry.optString("subjectId") }
                     val accent = runCatching { Color(android.graphics.Color.parseColor(subject?.optString("color", "#B5A9FF") ?: "#B5A9FF")) }.getOrDefault(Purple)
-                    Row(Modifier.fillMaxWidth().background(Night, RoundedCornerShape(12.dp)).padding(10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Column(Modifier.width(42.dp), horizontalAlignment = Alignment.End) {
-                            Text(entry.optString("start"), color = Color(0xFFF4F2FC), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                            Text(entry.optString("end"), color = Muted, fontSize = 9.sp)
+                    Column(Modifier.fillMaxWidth().background(Night, RoundedCornerShape(12.dp)).padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Column(Modifier.width(42.dp), horizontalAlignment = Alignment.End) {
+                                Text(entry.optString("start"), color = Color(0xFFF4F2FC), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                Text(entry.optString("end"), color = Muted, fontSize = 9.sp)
+                            }
+                            Box(Modifier.width(3.dp).height(38.dp).background(accent, RoundedCornerShape(2.dp)))
+                            Column(Modifier.weight(1f)) {
+                                Text(entry.optString("title"), color = Color(0xFFF4F2FC), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                Text(listOfNotNull(entry.optString("kind").takeIf { it.isNotBlank() }, subject?.optString("name")?.takeIf { it.isNotBlank() }).joinToString(" · "), color = Muted, fontSize = 9.sp)
+                            }
                         }
-                        Box(Modifier.width(3.dp).height(38.dp).background(accent, RoundedCornerShape(2.dp)))
-                        Column(Modifier.weight(1f)) {
-                            Text(entry.optString("title"), color = Color(0xFFF4F2FC), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                            Text(listOfNotNull(entry.optString("kind").takeIf { it.isNotBlank() }, subject?.optString("name")?.takeIf { it.isNotBlank() }).joinToString(" · "), color = Muted, fontSize = 9.sp)
+                        if (entry.optString("kind", "Class") == "Class") {
+                            val dayKey = selectedDate.toString()
+                            val attendance = planner.optJSONArray("attendance") ?: JSONArray()
+                            val status = (0 until attendance.length()).mapNotNull { attendance.optJSONObject(it) }
+                                .firstOrNull { it.optString("classId") == entry.optString("id") && it.optString("date") == dayKey }
+                                ?.optString("status")
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("Attendance", color = Muted, fontSize = 10.sp)
+                                Spacer(Modifier.width(6.dp))
+                                FilterChip(selected = status == "present", onClick = { saveAttendance(recordClassAttendance(planner, entry.optString("subjectId"), entry.optString("title"), entry.optString("id"), dayKey, "present")) }, label = { Text("Present", fontSize = 10.sp) })
+                                Spacer(Modifier.width(4.dp))
+                                FilterChip(selected = status == "absent", onClick = { saveAttendance(recordClassAttendance(planner, entry.optString("subjectId"), entry.optString("title"), entry.optString("id"), dayKey, "absent")) }, label = { Text("Absent", fontSize = 10.sp) })
+                            }
                         }
                     }
                 }
@@ -757,8 +769,6 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
 }
 
 @Composable private fun InfoPage(onSignOut: () -> Unit) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val installedVersion = remember { context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "" }
     val atmosphere = rememberInfiniteTransition(label = "info atmosphere")
     val infinityGlow by atmosphere.animateFloat(0.12f, 0.32f, infiniteRepeatable(tween(2300, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "infinity glow")
     LazyColumn(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0xFF11111B), Color(0xFF111A22), Night))).padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(top = 10.dp, bottom = 22.dp)) {
@@ -782,7 +792,6 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
             LinkRow("Email", "aryantiwari90605@gmail.com", "mailto:aryantiwari90605@gmail.com", context)
         } }
         item { InfoCard("Device features", "Add the AURA points and day-streak widget from your Android home screen: long-press the home screen, choose Widgets, then select AURA. The focus timer runs while you switch apps or turn off the screen; AURA does not track app usage. Choose a water reminder interval before starting Focus. Social notification muting is optional. Scheduled task alarms and notifications are set in the Tasks tab. Android may ask for notification permission; exact task reminders may also require Alarms & reminders access. Alarms use Android’s alarm service and can ring while AURA is closed.") }
-        item { InfoCard("App updates", "Installed version $installedVersion. AURA checks when you open the app and about every 12 hours when a network is available. It notifies you once when a newer release appears. Tap the notification to download the APK in your browser, then install it through Android.") }
         item { InfoCard("Account", "Your sign-in stays saved on this device. Use Sign out only when you want to remove this account from the app.") {
             Button(onClick = onSignOut, modifier = Modifier.fillMaxWidth().padding(top = 12.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF392832))) { Text("Sign out of AURA") }
         } }
