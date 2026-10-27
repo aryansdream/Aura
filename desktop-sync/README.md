@@ -43,3 +43,8 @@ npm run dist:windows
 ```
 
 Build Windows installers on Windows. The repository workflow at `.github/workflows/aura-sync-build.yml` builds both platform artifacts on GitHub Actions and stores them as downloadable workflow artifacts; it does not publish a release automatically.
+## Aura Sync 1.0.3 desktop release
+
+The Ubuntu/Debian 1.0.3 build opens the full Aura planner inside the desktop app and includes the desktop local-network companion. The planner provides the web-backed Focus timer, timetable, subjects, attendance, study logs, scheduled tasks, and account data; the companion provides same-Wi-Fi device discovery, text/clipboard/file sharing, and optional local media metadata classification. Android-only OS integrations such as Android step/screen-time permissions and Accessibility overlays remain Android-specific.
+
+The Windows installer remains at 1.0.2 in this release.
