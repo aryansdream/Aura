@@ -182,13 +182,18 @@ const focusPointIntervalSeconds = 120;
 const focusDay = new Date(); focusDay.setHours(focusDay.getHours() - 2); const focusToday = `${focusDay.getFullYear()}-${String(focusDay.getMonth()+1).padStart(2,'0')}-${String(focusDay.getDate()).padStart(2,'0')}`;
 let focusState;
 try { focusState = JSON.parse(localStorage.getItem(focusStoreKey)) || {}; } catch { focusState = {}; }
-if (focusState.date !== focusToday) focusState = { date: focusToday, minutes: 25, remaining: 25 * 60, completed: 0, running: false, pendingAwards: [] };
+const savedFocusAwards = Array.isArray(focusState.pendingAwards) ? focusState.pendingAwards : [];
+if (focusState.date !== focusToday) focusState = { date: focusToday, minutes: 25, remaining: 25 * 60, completed: 0, running: false, pendingAwards: savedFocusAwards };
 focusState.minutes = Number.isInteger(Number(focusState.minutes)) && Number(focusState.minutes) >= 1 && Number(focusState.minutes) <= 180 ? Number(focusState.minutes) : 25;
 focusState.remaining = Math.max(0, Math.min(focusState.minutes * 60, Number(focusState.remaining) || focusState.minutes * 60));
 focusState.completed = Math.max(0, Number(focusState.completed) || 0);
 focusState.activeSeconds = Math.max(0, Number(focusState.activeSeconds) || 0);
 focusState.awardedSegments = Math.max(0, Number(focusState.awardedSegments) || 0);
-focusState.pendingAwards = []; // Remove old non-Focus reward requests.
+focusState.pendingAwards = (Array.isArray(focusState.pendingAwards) ? focusState.pendingAwards : []).filter((award) =>
+  award && typeof award.sessionId === 'string' && award.sessionId.startsWith('f2-') &&
+  Number.isInteger(award.segment) && award.segment > 0 && typeof award.subjectId === 'string' &&
+  typeof award.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(award.date) && typeof award.ownerId === 'string'
+);
 focusState.sessionId = typeof focusState.sessionId === 'string' ? focusState.sessionId : '';
 focusState.subjectId = typeof focusState.subjectId === 'string' ? focusState.subjectId : '';
 // Start a fresh point segment when upgrading from the old five-minute award cadence.
@@ -225,29 +230,38 @@ function renderFocusSubjects() {
   focusState.subjectId = select.value; select.disabled = focusState.running;
 }
 async function syncFocusAwards() {
-  if (!account || !navigator.onLine || focusState.syncingAwards) return;
+  const ownerId = account?.user?.id;
+  if (!ownerId || !navigator.onLine || focusState.syncingAwards) return;
   focusState.syncingAwards = true;
   try {
-    while (focusState.pendingAwards.length && account) {
-      const result = await api('/api/planner', { action: 'focus-point', ...focusState.pendingAwards[0] });
-      focusState.pendingAwards.shift();
+    while (account?.user?.id === ownerId) {
+      const index = focusState.pendingAwards.findIndex((award) => award.ownerId === ownerId);
+      if (index < 0) break;
+      const award = focusState.pendingAwards[index];
+      const result = await api('/api/planner', { action: 'focus-point', ...award });
+      focusState.pendingAwards.splice(index, 1);
       state.total = Number(result.total ?? state.total); persistFocus(); reloadAccount();
     }
   } catch (error) {
-    if (error.status === 409) { focusState.pendingAwards.shift(); persistFocus(); toast(error.message); }
+    if (error.status >= 400 && error.status < 500 && error.status !== 401 && error.status !== 429) {
+      const index = focusState.pendingAwards.findIndex((award) => award.ownerId === ownerId);
+      if (index >= 0) focusState.pendingAwards.splice(index, 1);
+      persistFocus(); toast(error.message);
+    }
   } finally { focusState.syncingAwards = false; }
 }
 window.addEventListener('online', syncFocusAwards);
 window.addEventListener('aura:planner-synced', syncFocusAwards);
+window.addEventListener('aura:focus-awards-ready', syncFocusAwards);
 function awardFocusSegment() {
   if (!focusState.sessionId || !focusState.subjectId) return;
   const segment = focusState.awardedSegments + 1;
   const activityDay = new Date(); activityDay.setHours(activityDay.getHours() - 2);
   const activityDate = `${activityDay.getFullYear()}-${String(activityDay.getMonth()+1).padStart(2,'0')}-${String(activityDay.getDate()).padStart(2,'0')}`;
   focusState.awardedSegments = segment;
-  focusState.pendingAwards.push({ sessionId: focusState.sessionId, segment, subjectId: focusState.subjectId, date: activityDate });
+  focusState.pendingAwards.push({ sessionId: focusState.sessionId, segment, subjectId: focusState.subjectId, date: activityDate, ownerId: account?.user?.id || '' });
   planner.logFocusStudyBlock(focusState.sessionId, segment, focusState.subjectId);
-  persistFocus(); syncFocusAwards(); toast('2 focused minutes · +0.01 AP earned');
+  persistFocus(); syncFocusAwards(); toast('2 focused minutes · +0.10 AP earned');
 }
 function updateFocusElapsed() {
   if (!focusState.running || !focusPeriodStartedAt) return;
@@ -282,7 +296,7 @@ function renderFocus() {
     const active = Number(button.dataset.focusMinutes) === focusState.minutes;
     button.classList.toggle('active', active); button.setAttribute('aria-pressed', String(active));
   });
-  $('focusStatus').textContent = `${focusState.completed} sessions today · ${formatAP(focusState.awardedSegments)} AP earned`;
+  $('focusStatus').textContent = `${focusState.completed} sessions today · ${formatAP(focusState.awardedSegments * 10)} AP earned`;
   window.AURA_FOCUS_ACTIVE = Boolean(focusState.running);
   const screen = $('focusScreen'); screen.classList.toggle('active', Boolean(focusState.running)); screen.setAttribute('aria-hidden', String(!focusState.running));
   $('focusScreenTime').textContent = `${String(Math.floor(remaining / 60)).padStart(2, '0')}:${String(remaining % 60).padStart(2, '0')}`;
@@ -513,7 +527,7 @@ function showAccount(data, options = {}) {
   window.setTimeout(showTomorrowPlan, 400);
 }
 async function reloadAccount() {
-  try { showAccount(await api('/api/me')); return true; }
+  try { showAccount(await api('/api/me')); syncFocusAwards(); return true; }
   catch (error) {
     if (error.message === 'Sign in to sync your progress.') showAccount(null);
     else { $('authState').textContent = 'Sync unavailable'; $('saveState').textContent = 'Could not reach AURA sync'; }

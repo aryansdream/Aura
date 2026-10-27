@@ -94,6 +94,7 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
     val localPrefs = remember { context.getSharedPreferences("aura_native", 0) }
     var account by remember { mutableStateOf(runCatching { localPrefs.getString("account_cache", null)?.let(::JSONObject) }.getOrNull()) }
     var user by remember { mutableStateOf(account?.optJSONObject("user")) }
+    var accountCacheSnapshot by remember { mutableStateOf(localPrefs.getString("account_cache", null)) }
     var planner by remember { mutableStateOf(runCatching { localPrefs.getString("planner_cache", null)?.let(::JSONObject) ?: JSONObject() }.getOrDefault(JSONObject())) }
     var leaderboard by remember { mutableStateOf(JSONArray()) }
     var page by remember { mutableStateOf("Today") }
@@ -155,7 +156,16 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
 
     LaunchedEffect(Unit) {
         if (context.getSharedPreferences("aura_native", 0).getString("cookie", null) != null) load()
-        while (true) { focusNow = android.os.SystemClock.elapsedRealtime(); delay(1000) }
+        while (true) {
+            focusNow = android.os.SystemClock.elapsedRealtime()
+            val latestAccountCache = localPrefs.getString("account_cache", null)
+            if (latestAccountCache != accountCacheSnapshot) {
+                accountCacheSnapshot = latestAccountCache
+                account = runCatching { latestAccountCache?.let(::JSONObject) }.getOrNull()
+                user = account?.optJSONObject("user")
+            }
+            delay(1000)
+        }
     }
 
     LaunchedEffect(user?.optString("id")) {
@@ -366,7 +376,7 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
     val context = androidx.compose.ui.platform.LocalContext.current
     val prefs = remember { context.getSharedPreferences("aura_native", 0) }
     val isRunning = prefs.getBoolean("focus_running", false)
-    var waterInterval by remember { mutableIntStateOf(prefs.getInt("water_interval_minutes", 30).coerceIn(15, 90)) }
+    var waterInterval by remember { mutableIntStateOf(prefs.getInt("water_interval_minutes", 30).coerceIn(5, 90)) }
     var blockApps by remember { mutableStateOf(prefs.getBoolean("block_social_apps", false)) }
     var blockNotifications by remember { mutableStateOf(prefs.getBoolean("block_social_notifications", false)) }
     var waterReminderCount by remember { mutableIntStateOf(prefs.getInt("water_reminder_count", 0)) }
@@ -416,12 +426,12 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                 Column(Modifier.fillMaxWidth().padding(15.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Focus preferences", fontWeight = FontWeight.Bold)
                     Text("Water reminder · every $waterInterval min", color = Purple, fontSize = 12.sp)
-                    Slider(value = waterInterval.toFloat(), onValueChange = { waterInterval = (it.toInt() / 5 * 5).coerceIn(15, 90); prefs.edit().putInt("water_interval_minutes", waterInterval).apply() }, valueRange = 15f..90f, steps = 14)
+                    Slider(value = waterInterval.toFloat(), onValueChange = { waterInterval = ((it.toInt() - 5) / 5 * 5 + 5).coerceIn(5, 90); prefs.edit().putInt("water_interval_minutes", waterInterval).apply() }, valueRange = 5f..90f, steps = 16)
                     Text("AURA shows an animated water break while open and a reminder notification when you’re away.", color = Muted, fontSize = 11.sp, lineHeight = 15.sp)
                     HorizontalDivider(color = Muted.copy(alpha = .2f))
                     Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("Block social apps", fontWeight = FontWeight.Medium); Text("Only while a focus session is active", color = Muted, fontSize = 10.sp) }; Switch(checked = blockApps, onCheckedChange = { blockApps = it; prefs.edit().putBoolean("block_social_apps", it).apply() }) }
                     if (blockApps) {
-                        Text("Covers Instagram, TikTok, Facebook, Messenger, Snapchat, X, Threads, Reddit and Pinterest. ChatGPT, Gemini and YouTube remain available. AURA checks only the foreground app name through Android Accessibility while focus is active.", color = Muted, fontSize = 10.sp, lineHeight = 14.sp)
+                        Text("Covers Instagram, TikTok, Facebook, Messenger, WhatsApp, Snapchat, X, Threads, Reddit and Pinterest. ChatGPT, Gemini and YouTube remain available. AURA checks only the foreground app name through Android Accessibility while focus is active.", color = Muted, fontSize = 10.sp, lineHeight = 14.sp)
                         if (!accessibilityEnabled) TextButton(onClick = { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) { Text("Enable AURA in Accessibility settings") }
                     }
                     HorizontalDivider(color = Muted.copy(alpha = .2f))
@@ -432,7 +442,7 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
             Text("The timer continues with the screen off. App blocking and notification blocking are optional and require their Android access to be enabled.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp, modifier = Modifier.padding(bottom = 10.dp))
         }
     }
-    if (showWaterPrompt) AlertDialog(onDismissRequest = { showWaterPrompt = false }, title = { Text("Water break") }, text = { Column(horizontalAlignment = Alignment.CenterHorizontally) { AnimatedWaterGlass(); Text("Take a sip, then return to your focus session.", color = Muted, fontSize = 12.sp) } }, confirmButton = { TextButton(onClick = { showWaterPrompt = false }) { Text("Continue focus") } })
+    if (showWaterPrompt) AlertDialog(onDismissRequest = { showWaterPrompt = false }, title = { Text("Water break") }, text = { Column(horizontalAlignment = Alignment.CenterHorizontally) { AnimatedWaterGlass(); Text("Paani peelo, meri jaan 💧 Then return to your focus session.", color = Muted, fontSize = 12.sp) } }, confirmButton = { TextButton(onClick = { showWaterPrompt = false }) { Text("Continue focus") } })
 }
 
 @Composable private fun AnimatedWaterGlass() {
@@ -840,7 +850,7 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                 }
             }
         }
-        item { InfoCard("How points work", "Aura Points display to two decimal places. Only completed Focus timer sessions earn points: 0.01 AP for every two focused minutes. Manually logged study hours, classes and scheduled tasks do not earn points. Your streak advances when a Focus session earns points.") }
+        item { InfoCard("How points work", "Aura Points display to two decimal places. Only completed Focus timer sessions earn points: 0.10 AP for every two focused minutes. Manually logged study hours, classes and scheduled tasks do not earn points. Your streak advances when a Focus session earns points.") }
         item { InfoCard("Connect with Aryan", "Connect with Aryan across work, projects, and social.") {
             val context = androidx.compose.ui.platform.LocalContext.current
             LinkRow("LinkedIn", "linkedin.com/in/aryan-tiwari-884906281", "https://linkedin.com/in/aryan-tiwari-884906281/", context)

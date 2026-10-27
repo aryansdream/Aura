@@ -1,9 +1,9 @@
 {
-  "versionCode": 23,
-  "versionName": "1.3.1",
-  "apkUrl": "https://aura-day-tracker.vercel.app/aura-android-1.3.1-master.apk",
-  "sha256": "c120a45c8c38e6c57bdd16c65dc400aba29207c9325cfce2e498647324c14551",
-  "releaseNotes": "Master update improves focus blocker stability, adds notification and alarm test controls, and lets notification reminders work without exact-alarm access.",
+  "versionCode": 24,
+  "versionName": "1.3.2",
+  "apkUrl": "https://aura-day-tracker.vercel.app/aura-android-1.3.2-master.apk",
+  "sha256": "eb3b9e147f8c9c41fcdcd6628066d27b46612a44848a6f95d0869b50b06b32bc",
+  "releaseNotes": "WhatsApp app and notification blocking, steadier focus app switching, 0.10 AP per two focused minutes, and configurable water reminders from 5 to 90 minutes.",
   "defaultVersionName": "1.1.8",
   "defaultApkUrl": "https://aura-day-tracker.vercel.app/aura-android-1.1.8.apk"
 }

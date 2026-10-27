@@ -63,22 +63,27 @@ export default async function handler(req, res) {
         LATERAL jsonb_array_elements(COALESCE(data->'subjects', '[]'::jsonb)) AS subjects(subject)
         WHERE user_id=${user.id} AND subject->>'id'=${subjectId} LIMIT 1`;
       if (!subject) return send(res, 400, { error: 'Choose a subject saved to your AURA account.' });
-      const [daily] = await sql`SELECT COALESCE(SUM(points),0)::int AS total FROM aura_completions WHERE user_id=${user.id} AND day=${day} AND task_id LIKE 'focus_%'`;
-      if (daily.total >= 200) return send(res, 409, { error: 'AURA caps daily points at 200 to keep the leaderboard fair.' });
       const taskId = `focus_${sessionId}_${segment}`;
+      const [existing] = await sql`SELECT points FROM aura_completions WHERE user_id=${user.id} AND task_id=${taskId} AND day=${day} LIMIT 1`;
+      const [daily] = await sql`SELECT COALESCE(SUM(points),0)::int AS total FROM aura_completions WHERE user_id=${user.id} AND day=${day} AND task_id LIKE 'focus_%'`;
+      if (!existing && daily.total >= 2000) return send(res, 409, { error: 'AURA has reached its daily focus-point cap.' });
       const inserted = await sql`INSERT INTO aura_completions(user_id, task_id, title, category, points, verified, day)
-        VALUES(${user.id}, ${taskId}, ${`Focus study: ${subject.name}`}, 'Study', 1, true, ${day})
+        VALUES(${user.id}, ${taskId}, ${`Focus study: ${subject.name}`}, 'Study', 10, true, ${day})
         ON CONFLICT(user_id, task_id, day) DO NOTHING RETURNING points`;
       if (inserted.length) {
         await sql`UPDATE aura_planner_data SET data=jsonb_set(
           data, '{studyLogs}', COALESCE(data->'studyLogs', '[]'::jsonb) || jsonb_build_array(
             jsonb_build_object('id', ${taskId}, 'subjectId', ${subjectId}, 'date', ${day}, 'minutes', 2, 'topic', 'Focus session', 'source', 'focus')
           ), true), updated_at=now()
-          WHERE user_id=${user.id}`;
+          WHERE user_id=${user.id} AND NOT EXISTS (
+            SELECT 1 FROM jsonb_array_elements(COALESCE(data->'studyLogs', '[]'::jsonb)) AS log
+            WHERE log->>'id'=${taskId}
+          )`;
       }
       const [totals] = await sql`SELECT COALESCE(SUM(points) FILTER (WHERE verified),0)::int AS total,
-        0::int AS pending FROM aura_completions WHERE user_id=${user.id} AND task_id LIKE 'focus_%'`;
-      return send(res, 200, { points: Number(inserted?.[0]?.points || 0), total: totals.total, pending: totals.pending, alreadyRecorded: !inserted.length });
+        COUNT(*)::int AS completed, COUNT(*) FILTER (WHERE day=${today})::int AS today, 0::int AS pending
+        FROM aura_completions WHERE user_id=${user.id} AND verified AND task_id LIKE 'focus_%'`;
+      return send(res, 200, { points: Number(existing?.points || inserted?.[0]?.points || 0), total: totals.total, completed: totals.completed, today: totals.today, pending: totals.pending, alreadyRecorded: Boolean(existing) || !inserted.length });
     }
     if (req.method === 'GET') {
       const [row] = await sql`SELECT data FROM aura_planner_data WHERE user_id=${user.id}`;

@@ -22,6 +22,7 @@ class FocusBlockAccessibilityService : AccessibilityService() {
     private var blocker: View? = null
     private val handler = Handler(Looper.getMainLooper())
     private var lastForegroundPackage: String? = null
+    private val delayedHide = Runnable { hideBlocker() }
     private val checkActive = object : Runnable {
         override fun run() {
             val prefs = getSharedPreferences("aura_native", MODE_PRIVATE)
@@ -47,12 +48,23 @@ class FocusBlockAccessibilityService : AccessibilityService() {
         if (!active) { hideBlocker(); return }
         if (event?.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
         val foregroundPackage = event.packageName?.toString()?.takeIf { it.isNotBlank() } ?: return
+        // System UI windows can be reported between the launcher and the app being opened.
+        // Keep the current decision through those short transitions to avoid a visible flash.
+        if (foregroundPackage in setOf("com.android.systemui", "com.vivo.systemuiplugin")) return
         // Adding the accessibility overlay generates AURA's own window event. Ignore it so
         // the overlay stays mounted until a real app switch occurs.
         if (foregroundPackage == packageName && blocker != null) return
         if (foregroundPackage == lastForegroundPackage) return
         lastForegroundPackage = foregroundPackage
-        if (FocusAppPolicy.isDistracting(foregroundPackage)) showBlocker() else hideBlocker()
+        if (FocusAppPolicy.isDistracting(foregroundPackage)) {
+            handler.removeCallbacks(delayedHide)
+            showBlocker()
+        } else if (blocker != null) {
+            // App launches often emit a brief launcher/transition window before the final
+            // activity. Delay removal so opening a blocked app doesn't reveal its content.
+            handler.removeCallbacks(delayedHide)
+            handler.postDelayed(delayedHide, if (foregroundPackage == "com.android.launcher3") 0 else 350)
+        }
     }
 
     override fun onInterrupt() = hideBlocker()
@@ -109,6 +121,7 @@ class FocusBlockAccessibilityService : AccessibilityService() {
     }
 
     private fun hideBlocker() {
+        handler.removeCallbacks(delayedHide)
         handler.removeCallbacks(checkActive)
         blocker?.let { view -> runCatching { getSystemService(WindowManager::class.java).removeView(view) } }
         blocker = null

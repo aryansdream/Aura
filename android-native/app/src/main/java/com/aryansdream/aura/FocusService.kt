@@ -53,7 +53,7 @@ class FocusService : Service() {
         val subjectId = intent?.getStringExtra("subjectId") ?: prefs.getString("focus_subject_id", "").orEmpty()
         val session = intent?.getStringExtra("session") ?: prefs.getString("focus_session", null) ?: UUID.randomUUID().toString()
         val deadline = SystemClock.elapsedRealtime() + duration
-        val waterInterval = prefs.getInt("water_interval_minutes", 30).coerceIn(15, 90)
+        val waterInterval = prefs.getInt("water_interval_minutes", 30).coerceIn(5, 90)
         val edit = prefs.edit().putBoolean("focus_running", true).putLong("focus_deadline", deadline)
             .putLong("focus_wall_deadline", endWall).putString("focus_subject", subject)
             .putString("focus_subject_id", subjectId).putString("focus_session", session)
@@ -66,6 +66,8 @@ class FocusService : Service() {
         loop?.cancel()
         loop = CoroutineScope(Dispatchers.IO).launch {
             var awarded = prefs.getInt("focus_awarded", 0)
+            val startedAt = prefs.getLong("focus_started_wall", nowWall)
+            val totalDuration = prefs.getLong("focus_duration_ms", duration)
             while (true) {
                 val remaining = deadline - SystemClock.elapsedRealtime()
                 if (remaining <= 0) break
@@ -77,15 +79,23 @@ class FocusService : Service() {
                     prefs.edit().putLong("focus_next_water_at_elapsed", nextWaterAt)
                         .putInt("water_reminder_count", prefs.getInt("water_reminder_count", 0) + 1).apply()
                 }
-                val completed = ((duration - remaining).coerceAtLeast(0) / 120_000L).toInt()
+                // Base awards on the original wall-clock start so service restarts don't
+                // restart the two-minute counter or skip already elapsed focus time.
+                val completed = ((System.currentTimeMillis() - startedAt).coerceIn(0L, totalDuration) / 120_000L).toInt()
                 while (awarded < completed) {
                     awarded++
                     val body = JSONObject().put("action", "focus-point").put("sessionId", session).put("segment", awarded).put("subjectId", subjectId)
-                    runCatching { AuraApi.request(applicationContext, "/api/planner", body) }
-                        .onFailure {
-                            val accountId = runCatching { JSONObject(prefs.getString("account_cache", "{}") ?: "{}").optJSONObject("user")?.optString("id").orEmpty() }.getOrDefault("")
-                            if (accountId.isNotBlank()) AuraApi.queueAction(applicationContext, "/api/planner", body, accountId)
+                    val response = runCatching { AuraApi.request(applicationContext, "/api/planner", body) }
+                    if (response.isSuccess) updateCachedPoints(response.getOrNull(), optimistic = false)
+                    else {
+                        val error = response.exceptionOrNull()
+                        val retryable = error !is AuraApi.HttpFailure || error.status == 401 || error.status == 429 || error.status >= 500
+                        val accountId = runCatching { JSONObject(prefs.getString("account_cache", "{}") ?: "{}").optJSONObject("user")?.optString("id").orEmpty() }.getOrDefault("")
+                        if (retryable && accountId.isNotBlank()) {
+                            AuraApi.queueAction(applicationContext, "/api/planner", body, accountId)
+                            updateCachedPoints(null, optimistic = true)
                         }
+                    }
                     prefs.edit().putInt("focus_awarded", awarded).apply()
                 }
                 NotificationManagerCompatShim.notify(this@FocusService, NOTIFICATION, notification(remaining, subject))
@@ -97,12 +107,30 @@ class FocusService : Service() {
         return START_STICKY
     }
 
+    private fun updateCachedPoints(result: JSONObject?, optimistic: Boolean) {
+        runCatching {
+            val cached = JSONObject(prefs.getString("account_cache", "{}") ?: "{}")
+            val stats = cached.optJSONObject("stats") ?: JSONObject()
+            if (result != null) {
+                stats.put("total", result.optInt("total", stats.optInt("total")))
+                stats.put("completed", result.optInt("completed", stats.optInt("completed")))
+                stats.put("today", result.optInt("today", stats.optInt("today")))
+            } else if (optimistic) {
+                stats.put("total", stats.optInt("total") + 10)
+                stats.put("completed", stats.optInt("completed") + 1)
+                stats.put("today", stats.optInt("today") + 1)
+            }
+            cached.put("stats", stats)
+            prefs.edit().putString("account_cache", cached.toString()).apply()
+        }
+    }
+
     private fun showWaterReminder() {
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val reminder = NotificationCompat.Builder(this, WATER_CHANNEL)
             .setSmallIcon(android.R.drawable.ic_menu_compass)
             .setContentTitle("AURA · water break")
-            .setContentText("Take a sip of water, then continue your focus session.")
+            .setContentText("Paani peelo, meri jaan 💧 Then continue your focus session.")
             .setContentIntent(open)
             .setAutoCancel(true)
             .setOnlyAlertOnce(true)
