@@ -1,7 +1,7 @@
 {
-  "versionCode": 20,
-  "versionName": "1.2.4",
-  "apkUrl": "https://aura-day-tracker.vercel.app/aura-android-1.2.4.apk",
-  "sha256": "967987428a68615584f4e575a2634d085c83b08323feaa7b28bb1c23271165d4",
-  "releaseNotes": "Adds present and absent controls directly to the home timetable for any selected date. Removes in-app update checks and notifications."
+  "versionCode": 11,
+  "versionName": "1.1.8",
+  "apkUrl": "https://aura-day-tracker.vercel.app/aura-android-1.1.8.apk",
+  "sha256": "824ac1e632e04d066142f55b436d731e0a412e4f3df0d12e55e395f09dbc7dff",
+  "releaseNotes": "Restores the previously installable AURA Android APK (version 1.1.8)."
 }
