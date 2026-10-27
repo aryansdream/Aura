@@ -4,6 +4,6 @@
   "apkUrl": "https://aura-day-tracker.vercel.app/aura-android-1.4.0-master.apk",
   "sha256": "5879ae53a799705a63a6f2a5e0df70ba741de5a02655ae6d2069bbf54e9b570e",
   "releaseNotes": "Aura Ecosystem: continuous transparent infinity AURA logo, refined light/dark interface, same-Wi-Fi focus and encrypted file sharing, and a short four-beep focus-completion cue. Focus completion notification is silent; scheduled class and task alarms remain separate.",
-  "defaultVersionName": "1.1.8",
-  "defaultApkUrl": "https://aura-day-tracker.vercel.app/aura-android-1.1.8.apk"
+  "defaultVersionName": "1.4.0",
+  "defaultApkUrl": "https://aura-day-tracker.vercel.app/aura-android-1.4.0-master.apk"
 }

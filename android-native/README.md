@@ -14,7 +14,7 @@ The install-compatible master APK is written to `app/build/outputs/apk/release/a
 
 ## Publishing an APK
 
-Increment `versionCode` and `versionName` in `app/build.gradle.kts`, build the APK, add it to `public/` with a versioned filename, and replace `public/aura-android.apk`. Update `public/aura-update.json` for the website's download label and checksum. Keep the same signing key so Android can update existing copies. The current website default remains the known-installable 1.1.8 until a master release is explicitly published.
+Increment `versionCode` and `versionName` in `app/build.gradle.kts`, build the APK, add it to `public/` with a versioned filename. Point the homepage download and `defaultApkUrl` in `public/aura-update.json` directly at that versioned APK, and update its checksum. Keep the same signing key so Android can update existing copies. The website default currently points to the 1.4.0 master APK. Older release APKs remain available in the website archive.
 
 ## Included in this build
 
