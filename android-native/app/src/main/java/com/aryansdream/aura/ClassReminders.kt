@@ -211,7 +211,12 @@ class ClassReminderReceiver : BroadcastReceiver() {
             return
         }
         val manager = context.getSystemService(NotificationManager::class.java)
-        if (Build.VERSION.SDK_INT >= 26 && manager.getNotificationChannel(CHANNEL) == null) manager.createNotificationChannel(NotificationChannel(CHANNEL, "Class reminders", NotificationManager.IMPORTANCE_HIGH))
+        if (Build.VERSION.SDK_INT >= 26 && manager.getNotificationChannel(CHANNEL) == null) {
+            manager.createNotificationChannel(NotificationChannel(CHANNEL, "Class reminders", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "Beep when a class starts and remind you after class"
+                enableVibration(true)
+            })
+        }
         val open = PendingIntent.getActivity(context, 0, Intent(context, MainActivity::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val builder = NotificationCompat.Builder(context, CHANNEL)
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
@@ -221,6 +226,9 @@ class ClassReminderReceiver : BroadcastReceiver() {
             .setAutoCancel(true)
             .setCategory(NotificationCompat.CATEGORY_REMINDER)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+        if (intent.action != ClassReminderScheduler.ACTION_CLASS_END) {
+            builder.setDefaults(NotificationCompat.DEFAULT_SOUND or NotificationCompat.DEFAULT_VIBRATE)
+        }
         if (intent.action == ClassReminderScheduler.ACTION_CLASS_END) {
             val yes = PendingIntent.getBroadcast(context, id.hashCode() * 31 + 2, Intent(context, ClassReminderReceiver::class.java).setAction(ClassReminderScheduler.ACTION_MARK_CLASS).putExtra("id", id).putExtra("title", title).putExtra("date", date), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
             val no = PendingIntent.getBroadcast(context, id.hashCode() * 31 + 3, Intent(context, ClassReminderReceiver::class.java).setAction(ClassReminderScheduler.ACTION_SKIP_CLASS).putExtra("id", id).putExtra("title", title).putExtra("date", date), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)

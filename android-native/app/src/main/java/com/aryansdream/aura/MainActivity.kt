@@ -199,8 +199,9 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
     fun saveNativePlanner(next: JSONObject, successMessage: String) {
         planner = next
         AuraApi.savePlannerDraft(context, next, user?.optString("id").orEmpty())
-        ClassReminderScheduler.sync(context, next)
-        TaskReminderScheduler.sync(context, next)
+        // Keep task data safe even if a device-specific AlarmManager call fails.
+        runCatching { ClassReminderScheduler.sync(context, next) }
+        runCatching { TaskReminderScheduler.sync(context, next) }
         scope.launch {
             busy = true
             try { withContext(Dispatchers.IO) { AuraApi.syncPendingPlanner(context, user?.optString("id").orEmpty()) }; syncMessage = successMessage }
@@ -546,7 +547,7 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
     var routineDays by remember { mutableStateOf((LocalDate.now().dayOfWeek.value % 7).toString()) }
     var routineReminder by remember { mutableStateOf(false) }
     var routineReminderInterval by remember { mutableIntStateOf(60) }
-    var reminderMenu by remember { mutableStateOf(false) }
+    val expandedClassSubjects = remember { mutableStateListOf<String>() }
     var logStudyDialog by remember { mutableStateOf(false) }
     var studyLogSubject by remember { mutableStateOf(subjects.optJSONObject(0)?.optString("id").orEmpty()) }
     var studyLogMinutes by remember { mutableStateOf("30") }
@@ -573,13 +574,24 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
             }
         }
         if (mode == "Classes") {
-            item { Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { SectionTitle("Class timetable", "Recurring classes with optional reminders") }; TextButton(onClick = { routineToEdit = null; routineTitle = ""; routineStart = "09:00"; routineEnd = "10:00"; routineDate = ""; routineDays = (LocalDate.now().dayOfWeek.value % 7).toString(); routineReminder = false; routineReminderInterval = 0; routineDialog = true }) { Text("+ Add class") } } }
-            if (schedule.length() == 0) item { EmptyCard("Add your first class to see it on your timetable.") }
-            items((0 until schedule.length()).mapNotNull { schedule.optJSONObject(it) }.filter { it.optString("kind", "Class") == "Class" }) { entry ->
-                Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) { Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) { Text(entry.optString("title"), fontWeight = FontWeight.SemiBold); Text("${entry.optString("start")}–${entry.optString("end")} · ${entry.optString("date").ifBlank { entry.optJSONArray("days")?.weekdayLabels() ?: "" }}${if (entry.optBoolean("reminderEnabled")) " · Reminder on" else ""}", color = Muted, fontSize = 10.sp) }
-                    TextButton(onClick = { routineToEdit = entry.optString("id"); routineTitle = entry.optString("title"); routineStart = entry.optString("start"); routineEnd = entry.optString("end"); routineDate = entry.optString("date"); routineDays = entry.optJSONArray("days")?.joinInts().orEmpty(); routineReminder = entry.optBoolean("reminderEnabled"); routineReminderInterval = entry.optInt("reminderIntervalMinutes", 0); routineDialog = true }) { Text("Edit") }
-                    TextButton(onClick = { val updated = JSONArray(); for (i in 0 until schedule.length()) if (schedule.optJSONObject(i)?.optString("id") != entry.optString("id")) updated.put(schedule.optJSONObject(i)); saveSchedule(updated) }) { Text("Delete", color = Color(0xFFFF8D8D)) }
+            item { Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { SectionTitle("Class timetable", "Open a subject to manage its class times") }; TextButton(onClick = { routineToEdit = null; routineTitle = ""; routineStart = "09:00"; routineEnd = "10:00"; routineDate = ""; routineDays = (LocalDate.now().dayOfWeek.value % 7).toString(); routineReminder = false; routineReminderInterval = 0; routineDialog = true }) { Text("+ Add subject") } } }
+            val classEntries = (0 until schedule.length()).mapNotNull { schedule.optJSONObject(it) }.filter { it.optString("kind", "Class") == "Class" }
+            val classGroups = classEntries.groupBy { it.optString("title").ifBlank { "Untitled subject" } }.toSortedMap()
+            if (classGroups.isEmpty()) item { EmptyCard("Add a subject and its class times to see your timetable.") }
+            items(classGroups.entries.toList(), key = { it.key }) { (subjectName, entries) ->
+                val expanded = subjectName in expandedClassSubjects
+                Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) { Column(Modifier.fillMaxWidth().clickable { if (expanded) expandedClassSubjects.remove(subjectName) else expandedClassSubjects.add(subjectName) }.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(subjectName, fontWeight = FontWeight.SemiBold); Text("${entries.size} class time${if (entries.size == 1) "" else "s"}${if (entries.any { it.optBoolean("reminderEnabled") }) " · start beep on" else ""}", color = Muted, fontSize = 10.sp) }; Text(if (expanded) "⌃" else "⌄", color = Purple, fontSize = 20.sp) }
+                    if (expanded) {
+                        entries.sortedWith(compareBy({ it.optJSONArray("days")?.joinInts().orEmpty() }, { it.optString("start") })).forEach { entry ->
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) { Text("${entry.optJSONArray("days")?.weekdayLabels() ?: entry.optString("date")} · ${entry.optString("start")}–${entry.optString("end")}", fontSize = 12.sp); if (entry.optString("date").isNotBlank()) Text(entry.optString("date"), color = Muted, fontSize = 10.sp) }
+                                TextButton(onClick = { routineToEdit = entry.optString("id"); routineTitle = subjectName; routineStart = entry.optString("start"); routineEnd = entry.optString("end"); routineDate = entry.optString("date"); routineDays = entry.optJSONArray("days")?.joinInts().orEmpty(); routineReminder = entry.optBoolean("reminderEnabled"); routineReminderInterval = 0; routineDialog = true }) { Text("Edit") }
+                                IconButton(onClick = { val updated = JSONArray(); for (i in 0 until schedule.length()) schedule.optJSONObject(i)?.takeIf { it.optString("id") != entry.optString("id") }?.let(updated::put); saveSchedule(updated) }) { Icon(Icons.Default.DeleteOutline, "Delete class time", tint = Color(0xFFFF8D8D)) }
+                            }
+                        }
+                        TextButton(onClick = { routineToEdit = null; routineTitle = subjectName; routineStart = "09:00"; routineEnd = "10:00"; routineDate = ""; routineDays = (LocalDate.now().dayOfWeek.value % 7).toString(); routineReminder = false; routineReminderInterval = 0; routineDialog = true }) { Text("+ Add class time") }
+                    }
                 } }
             }
         }
@@ -620,13 +632,13 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
         saveSubjects(updated); subjectDialog = false
     }, enabled = subjectName.trim().isNotEmpty()) { Text("Save") } }, dismissButton = { TextButton(onClick = { subjectDialog = false }) { Text("Cancel") } })
 
-    if (routineDialog) AlertDialog(onDismissRequest = { routineDialog = false }, title = { Text(if (routineToEdit == null) "Schedule a task" else "Edit scheduled task") }, text = {
+    if (routineDialog) AlertDialog(onDismissRequest = { routineDialog = false }, title = { Text(if (routineToEdit == null) "Add class time" else "Edit class time") }, text = {
         Column {
-            AuraField("Class name", routineTitle, { routineTitle = it })
+            AuraField("Subject", routineTitle, { routineTitle = it })
             AuraField("Start · HH:mm", routineStart, { routineStart = it }, keyboard = KeyboardType.Ascii)
             AuraField("End · HH:mm", routineEnd, { routineEnd = it }, keyboard = KeyboardType.Ascii)
             AuraField("One-time date · YYYY-MM-DD (optional)", routineDate, { routineDate = it }, keyboard = KeyboardType.Ascii)
-            Text(if (routineDate.isBlank()) "Repeat on" else "One-time task · selected date overrides repeat days", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
+            Text(if (routineDate.isBlank()) "Class days" else "One-time class date · selected date overrides weekdays", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 listOf("S", "M", "T", "W", "T", "F", "S").forEachIndexed { day, label ->
                     val chosen = routineDays.split(",").mapNotNull { it.trim().toIntOrNull() }.contains(day)
@@ -638,21 +650,10 @@ private fun AuraApp(onStartFocus: (String, String, Int) -> Unit, onStopFocus: ()
                 }
             }
             Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                Column(Modifier.weight(1f)) { Text("Notifications", fontWeight = FontWeight.Medium); Text("For this scheduled activity", color = Muted, fontSize = 11.sp) }
+                Column(Modifier.weight(1f)) { Text("Beep at class start", fontWeight = FontWeight.Medium); Text("Play a notification sound when class begins", color = Muted, fontSize = 11.sp) }
                 Switch(checked = routineReminder, onCheckedChange = { routineReminder = it })
             }
-            if (routineReminder) {
-                val intervalLabel = when (routineReminderInterval) { 0 -> "Once at start"; else -> "Every ${if (routineReminderInterval < 60) "$routineReminderInterval min" else "${routineReminderInterval / 60} hr"} during activity" }
-                ExposedDropdownMenuBox(reminderMenu, { reminderMenu = it }, modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
-                    OutlinedTextField(value = intervalLabel, onValueChange = {}, readOnly = true, label = { Text("Reminder frequency") }, modifier = Modifier.menuAnchor().fillMaxWidth(), trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(reminderMenu) })
-                    ExposedDropdownMenu(reminderMenu, { reminderMenu = false }) {
-                        listOf(0, 15, 30, 60, 120).forEach { minutes ->
-                            val label = when (minutes) { 0 -> "Once at start"; 15 -> "Every 15 minutes"; 30 -> "Every 30 minutes"; 60 -> "Every hour"; else -> "Every 2 hours" }
-                            DropdownMenuItem(text = { Text(label) }, onClick = { routineReminderInterval = minutes; reminderMenu = false })
-                        }
-                    }
-                }
-            }
+
         }
     }, confirmButton = { TextButton(onClick = {
         val id = routineToEdit ?: "r_${java.util.UUID.randomUUID()}"
