@@ -1,6 +1,6 @@
 {
   "name": "aura-sync",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Aura desktop app and local-first device companion for Linux and Windows",
   "author": "Aryan Tiwari <aryantiwari90605@gmail.com>",
   "homepage": "https://aura-day-tracker.vercel.app",
@@ -18,7 +18,9 @@
       "package.json"
     ],
     "extraResources": [
-      { "from": "../dist", "to": "web", "filter": ["**/*", "!**/*.apk"] }
+      { "from": "planner.html", "to": "web/index.html" },
+      { "from": "../src", "to": "web/src", "filter": ["**/*"] },
+      { "from": "../public", "to": "web", "filter": ["**/*", "!**/*.apk"] }
     ],
     "asarUnpack": [
       "node_modules/tesseract.js/**",

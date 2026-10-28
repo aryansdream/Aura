@@ -416,8 +416,15 @@ function startDashboardServer() {
         else { res.writeHead(404).end('Not found'); return; }
       }
       if (path.basename(file) === 'index.html') {
-        const html = fs.readFileSync(file, 'utf8').replace('</head>', `<script>window.AURA_DESKTOP_KEY=${JSON.stringify(dashboardToken)};</script></head>`);
+        const desktopStyle = '<style>#homeInstallPanel,.home-install-panel,.sync-downloads,.release-archive{display:none!important}</style>';
+        const desktopBoot = `<link rel="stylesheet" href="/src/planner.css"><script>window.AURA_DESKTOP_KEY=${JSON.stringify(dashboardToken)};</script>`;
+        const html = fs.readFileSync(file, 'utf8').replace('</head>', `${desktopStyle}${desktopBoot}</head>`);
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' }); res.end(html); return;
+      }
+      if (path.extname(file) === '.js') {
+        let source = fs.readFileSync(file, 'utf8');
+        if (path.basename(file) === 'main.js') source = source.replace(/^import\s+['"]\.\/planner\.css['"];?\s*$/m, '');
+        res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-cache' }); res.end(source); return;
       }
       res.writeHead(200, { 'content-type': dashboardMime(file), 'cache-control': path.extname(file) === '.html' ? 'no-cache' : 'public, max-age=3600' });
       fs.createReadStream(file).pipe(res);
@@ -431,6 +438,7 @@ function startDashboardServer() {
     dashboardServer.listen(DASHBOARD_PORT, '127.0.0.1', () => {
       dashboardServer.removeListener('error', reject);
       session.fromPartition(PARTITION).setPermissionRequestHandler((_webContents, permission, callback) => callback(permission === 'notifications'));
+      session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => callback(permission === 'notifications'));
       resolve(`http://127.0.0.1:${DASHBOARD_PORT}`);
     });
   });
