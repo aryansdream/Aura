@@ -167,7 +167,8 @@ class MainActivity : ComponentActivity() {
                         audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                     } else startMediaCapture()
                 } else {
-                    prefs.edit().putBoolean("av_classifier_enabled", false).putBoolean("media_auto_pause_enabled", false).apply()
+                    prefs.edit().putBoolean("av_classifier_enabled", false).putBoolean("media_auto_pause_enabled", false)
+                        .putBoolean("media_capture_ready", false).apply()
                     android.widget.Toast.makeText(this@MainActivity, "Screen capture permission is needed for audio/video classification.", android.widget.Toast.LENGTH_LONG).show()
                 }
             }
@@ -198,7 +199,8 @@ class MainActivity : ComponentActivity() {
                     isDarkMode = darkMode,
                     onThemeChange = { darkMode = it; prefs.edit().putBoolean("appearance_dark", it).apply() },
                     onContentClassifierToggle = { enabled ->
-                        prefs.edit().putBoolean("av_classifier_enabled", enabled).putBoolean("media_auto_pause_enabled", enabled).apply()
+                        prefs.edit().putBoolean("av_classifier_enabled", enabled).putBoolean("media_auto_pause_enabled", enabled)
+                            .putBoolean("media_capture_ready", false).remove("media_capture_error").apply()
                         if (enabled) {
                             val manager = getSystemService(MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
                             projectionConsentLauncher.launch(manager.createScreenCaptureIntent())
@@ -332,18 +334,13 @@ private fun AuraApp(isDarkMode: Boolean, onThemeChange: (Boolean) -> Unit, onCon
         return
     }
 
-    fun saveNativePlanner(next: JSONObject, successMessage: String) {
+    fun saveNativePlanner(next: JSONObject) {
         planner = next
         AuraApi.savePlannerDraft(context, next, user?.optString("id").orEmpty())
         // Keep task data safe even if a device-specific AlarmManager call fails.
         runCatching { ClassReminderScheduler.sync(context, next) }
         runCatching { TaskReminderScheduler.sync(context, next) }
-        scope.launch {
-            busy = true
-            try { withContext(Dispatchers.IO) { AuraApi.syncPendingPlanner(context, user?.optString("id").orEmpty()) }; syncMessage = successMessage }
-            catch (_: Exception) { syncMessage = "Saved on this device. AURA will sync when connected." }
-            busy = false
-        }
+        syncMessage = "Saved on this device. Account sync runs every 3 hours."
     }
 
     Scaffold(containerColor = if (focusFullScreen) Color.Black else Night, bottomBar = {
@@ -366,22 +363,15 @@ private fun AuraApp(isDarkMode: Boolean, onThemeChange: (Boolean) -> Unit, onCon
             if (!focusFullScreen && error.isNotBlank()) Text(error, Modifier.padding(horizontal = 20.dp), color = Color(0xFFFF8D8D), fontSize = 12.sp)
             if (!focusFullScreen && syncMessage.isNotBlank() && error.isBlank()) Text(syncMessage, Modifier.padding(horizontal = 20.dp), color = MaterialTheme.colorScheme.secondary, fontSize = 11.sp)
             when (page) {
-                "Today" -> HomePage(account, planner, onOpenStudy = { page = "Classes" }, saveAttendance = { next -> saveNativePlanner(next, "Attendance saved and synced.") })
+                "Today" -> HomePage(account, planner, onOpenStudy = { page = "Classes" }, saveAttendance = { next -> saveNativePlanner(next) })
                 "Focus" -> FocusPage(planner.optJSONArray("subjects") ?: JSONArray(), subjectChoice, { subjectChoice = it }, focusMinutes, { focusMinutes = it }, context.getSharedPreferences("aura_native", 0).getLong("focus_deadline", 0), focusNow, onStartFocus, onStopFocus)
-                "Subjects" -> StudyPage(planner, "Subjects") { next -> saveNativePlanner(next, "Subjects saved and synced.") }
-                "Classes" -> StudyPage(planner, "Classes") { next -> saveNativePlanner(next, "Class timetable saved and synced.") }
+                "Subjects" -> StudyPage(planner, "Subjects") { next -> saveNativePlanner(next) }
+                "Classes" -> StudyPage(planner, "Classes") { next -> saveNativePlanner(next) }
                 "Tasks" -> TasksPage(context, planner) { next ->
                     planner = next
                     AuraApi.savePlannerDraft(context, next, user?.optString("id").orEmpty())
                     val reminderScheduleFailures = TaskReminderScheduler.sync(context, next)
-                    scope.launch {
-                        busy = true
-                        try {
-                            withContext(Dispatchers.IO) { AuraApi.syncPendingPlanner(context, user?.optString("id").orEmpty()) }
-                            syncMessage = if (reminderScheduleFailures > 0) "Task saved, but Android could not schedule its alarm. Allow Alarms & reminders in Settings, then reopen Tasks." else "Task saved and reminder scheduled."
-                        } catch (_: Exception) { syncMessage = if (reminderScheduleFailures > 0) "Task saved locally, but its alarm needs Android Alarms & reminders access." else "Task saved on this device. It will sync when connected." }
-                        busy = false
-                    }
+                    syncMessage = if (reminderScheduleFailures > 0) "Task saved locally, but Android could not schedule its alarm. Allow Alarms & reminders in Settings, then reopen Tasks." else "Task and reminder saved on this device. Account sync runs every 3 hours."
                 }
                 "More" -> MorePage(
                     context = context,
@@ -693,10 +683,12 @@ private fun AuraApp(isDarkMode: Boolean, onThemeChange: (Boolean) -> Unit, onCon
 @Composable private fun MorePage(context: Context, isDarkMode: Boolean, onThemeChange: (Boolean) -> Unit, onContentClassifierToggle: (Boolean) -> Unit, onTable: () -> Unit, onInfo: () -> Unit, onShare: () -> Unit, onBlocklist: () -> Unit) {
     val prefs = remember { context.getSharedPreferences("aura_native", Context.MODE_PRIVATE) }
     var classifierEnabled by remember { mutableStateOf(prefs.getBoolean("av_classifier_enabled", false)) }
+    var classifierReady by remember { mutableStateOf(prefs.getBoolean("media_capture_ready", false)) }
     var accessibilityAccess by remember { mutableStateOf(FocusBlockAccessibilityService.isEnabled(context)) }
     LaunchedEffect(Unit) {
         while (true) {
             classifierEnabled = prefs.getBoolean("av_classifier_enabled", false)
+            classifierReady = prefs.getBoolean("media_capture_ready", false)
             accessibilityAccess = FocusBlockAccessibilityService.isEnabled(context)
             delay(1000)
         }
@@ -743,7 +735,18 @@ private fun AuraApp(isDarkMode: Boolean, onThemeChange: (Boolean) -> Unit, onCon
                         onContentClassifierToggle(enabled)
                     })
                 }
-                Text("When enabled, Android asks for screen-capture consent and shows an ongoing notification. AURA classifies screen frames and permitted playback audio on this phone; raw media is kept only in memory and is not sent or saved. Blocking runs during Focus. Some players disable audio capture. Blur requires AURA Accessibility access; Android uses an opaque cover if cross-window blur is unavailable.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
+                Text("When enabled, Android asks for screen-capture consent and shows an ongoing notification. AURA classifies screen frames, accessible player titles, and permitted playback audio on this phone; raw media is kept only in memory and is not sent or saved. Blocking runs during Focus. Some players disable audio capture. Blur requires AURA Accessibility access; Android uses an opaque cover if cross-window blur is unavailable.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
+                Text(
+                    when {
+                        !classifierEnabled -> "Classifier is off."
+                        classifierReady -> "Classifier is active and ready for Focus."
+                        else -> prefs.getString("media_capture_error", null)
+                            ?: "Waiting for Android screen-capture access. Turn this off and on to grant access again."
+                    },
+                    color = if (classifierReady) Color(0xFF8BD8C6) else Muted,
+                    fontSize = 11.sp,
+                    lineHeight = 16.sp
+                )
                 if (classifierEnabled && !accessibilityAccess) {
                     HorizontalDivider(color = Muted.copy(alpha = .2f))
                     Text("Enable AURA Accessibility to show the blur/cover over other apps.", color = Color(0xFFFFC77D), fontSize = 11.sp)
