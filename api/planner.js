@@ -3,10 +3,18 @@ import { appDay, db, ensureSchema, send, userFromRequest } from '../lib/shared.j
 const cleanString = (value, max) => String(value ?? '').trim().slice(0, max);
 function normalize(data) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
-  const allowed = ['subjects', 'schedule', 'scheduleOverrides', 'tasks', 'studyLogs', 'expenses', 'lifestyle', 'settings', 'completionChecks'];
+  const allowed = ['subjects', 'schedule', 'scheduleOverrides', 'attendance', 'tasks', 'studyLogs', 'expenses', 'lifestyle', 'settings', 'completionChecks'];
   const result = {};
   for (const key of allowed) result[key] = Array.isArray(data[key]) ? data[key].slice(-500) : (key === 'settings' && data[key] && typeof data[key] === 'object' ? data[key] : []);
   result.scheduleOverrides = Array.isArray(data.scheduleOverrides) ? data.scheduleOverrides.filter(x => /^\d{4}-\d{2}-\d{2}$/.test(x)).slice(-60) : [];
+  result.attendance = result.attendance.map(x => ({
+    id: cleanString(x.id, 100),
+    classId: cleanString(x.classId, 48),
+    subjectId: cleanString(x.subjectId, 48),
+    subjectName: cleanString(x.subjectName, 80),
+    date: /^\d{4}-\d{2}-\d{2}$/.test(x.date) ? x.date : '',
+    status: ['present', 'absent'].includes(x.status) ? x.status : ''
+  })).filter(x => x.id && x.classId && x.subjectName && x.date && x.status).slice(-500);
   result.subjects = result.subjects.map(x => ({ id: cleanString(x.id, 48), name: cleanString(x.name, 80), color: /^#[0-9a-f]{6}$/i.test(x.color) ? x.color : '#8b7cf6', teacher: cleanString(x.teacher, 80), notes: cleanString(x.notes, 500) })).filter(x => x.id && x.name);
   result.schedule = result.schedule.map(x => ({ id: cleanString(x.id, 48), title: cleanString(x.title, 100), subjectId: cleanString(x.subjectId, 48), days: Array.isArray(x.days) ? x.days.map(Number).filter(d => Number.isInteger(d) && d >= 0 && d <= 6) : [], date: /^\d{4}-\d{2}-\d{2}$/.test(x.date) ? x.date : '', overrideWeekday: Boolean(x.overrideWeekday), start: /^([01]\d|2[0-3]):[0-5]\d$/.test(x.start) ? x.start : '', end: /^([01]\d|2[0-3]):[0-5]\d$/.test(x.end) ? x.end : '', kind: cleanString(x.kind, 32) })).filter(x => x.id && x.title && x.start && x.end && ((x.date && !Number.isNaN(Date.parse(x.date))) || x.days.length));
   result.tasks = result.tasks.map(x => ({ id: cleanString(x.id, 48), title: cleanString(x.title, 120), subjectId: cleanString(x.subjectId, 48), deadline: cleanString(x.deadline, 32), alarmAt: x.alarmAt && !Number.isNaN(Date.parse(x.alarmAt)) ? new Date(x.alarmAt).toISOString() : null, alarmFired: Boolean(x.alarmFired), kind: ['task','assignment','test'].includes(x.kind) ? x.kind : 'task', done: Boolean(x.done), reminderType: ['notification','alarm'].includes(x.reminderType) ? x.reminderType : 'none', reminderHours: 0, nextReminderAt: null, createdAt: Number(x.createdAt) || Date.now() })).filter(x => x.id && x.title);

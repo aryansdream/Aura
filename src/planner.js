@@ -2,6 +2,8 @@ const STORE_KEY = 'aura_planner_guest_v1';
 const LAST_USER_KEY = 'aura_planner_last_user_v1';
 const pendingKey = userId => `aura_planner_pending_${encodeURIComponent(userId)}`;
 const userStoreKey = userId => `aura_planner_user_${encodeURIComponent(userId)}`;
+const lastSyncKey = userId => `aura_planner_last_sync_${encodeURIComponent(userId)}`;
+const SYNC_INTERVAL = 3 * 60 * 60 * 1000;
 const week = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const defaultData = () => ({ subjects: [], schedule: [], scheduleOverrides: [], tasks: [], studyLogs: [], expenses: [], lifestyle: [], settings: { currency: 'INR', notificationCopy: '' }, completionChecks: [] });
 const id = () => globalThis.crypto?.randomUUID?.() || `a${Date.now()}${Math.random().toString(36).slice(2, 8)}`;
@@ -45,21 +47,31 @@ export function initPlanner(api, getAccount) {
   try { data = { ...defaultData(), ...JSON.parse(localStorage.getItem(activeUser ? userStoreKey(activeUser) : STORE_KEY) || '{}') }; } catch {}
   data.settings = { ...defaultData().settings, ...(data.settings || {}) };
   const saveLocal = () => localStorage.setItem(activeUser ? userStoreKey(activeUser) : STORE_KEY, JSON.stringify(data));
+  function scheduleSync() {
+    clearTimeout(syncTimer);
+    if (!activeUser) return;
+    const elapsed = Date.now() - Number(localStorage.getItem(lastSyncKey(activeUser)) || 0);
+    syncTimer = setTimeout(() => syncAccount(), Math.max(1000, SYNC_INTERVAL - elapsed));
+  }
   async function flushPendingSync() {
     if (!activeUser || !navigator.onLine || syncInFlight || !localStorage.getItem(pendingKey(activeUser))) return;
     const userId = activeUser, snapshot = JSON.stringify(data);
     syncInFlight = true;
     try {
       const syncResult = await api('/api/planner', { data: JSON.parse(snapshot) });
+      localStorage.setItem(lastSyncKey(userId), String(Date.now()));
       window.dispatchEvent(new Event('aura:planner-synced'));
       if (activeUser === userId && JSON.stringify(data) === snapshot) {
         localStorage.removeItem(pendingKey(userId));
         get('plannerSync').textContent = 'Synced to your account';
       } else if (activeUser === userId) {
-        clearTimeout(syncTimer); syncTimer = setTimeout(flushPendingSync, 0);
+        // Keep a concurrent edit queued for the next scheduled sync window.
       }
+      scheduleSync();
     } catch {
+      localStorage.setItem(lastSyncKey(userId), String(Date.now()));
       if (activeUser === userId) get('plannerSync').textContent = navigator.onLine ? 'Saved here · sync will retry' : 'Saved offline · will sync when online';
+      scheduleSync();
     } finally { syncInFlight = false; }
   }
   function persist(render = renderAll) {
@@ -67,11 +79,33 @@ export function initPlanner(api, getAccount) {
     render();
     if (activeUser) {
       localStorage.setItem(pendingKey(activeUser), String(Date.now()));
-      get('plannerSync').textContent = navigator.onLine ? 'Saved here · syncing…' : 'Saved offline · will sync when online';
-      clearTimeout(syncTimer); syncTimer = setTimeout(flushPendingSync, 350);
+      get('plannerSync').textContent = navigator.onLine ? 'Saved on this device · syncs every 3 hours' : 'Saved offline · will sync later';
     } else get('plannerSync').textContent = 'Saved on this device · sign in to sync';
   }
-  window.addEventListener('online', flushPendingSync);
+  async function syncAccount() {
+    if (!activeUser || !navigator.onLine || syncInFlight) return;
+    const due = Date.now() - Number(localStorage.getItem(lastSyncKey(activeUser)) || 0) >= SYNC_INTERVAL;
+    if (!due) return;
+    if (localStorage.getItem(pendingKey(activeUser))) return flushPendingSync();
+    const userId = activeUser;
+    syncInFlight = true;
+    try {
+      const result = await api('/api/planner');
+      if (activeUser !== userId) return;
+      localStorage.setItem(lastSyncKey(userId), String(Date.now()));
+      if (result.data) {
+        data = { ...defaultData(), ...result.data };
+        data.settings = { ...defaultData().settings, ...(data.settings || {}) };
+        if (result.personalization?.copy && !data.settings.notificationCopy) data.settings.notificationCopy = result.personalization.copy;
+        saveLocal(); renderAll(); checkReminders();
+      }
+      get('plannerSync').textContent = 'Synced to your account';
+    } catch {
+      localStorage.setItem(lastSyncKey(userId), String(Date.now()));
+      get('plannerSync').textContent = 'Saved here · sync will retry later';
+    } finally { syncInFlight = false; scheduleSync(); }
+  }
+  window.addEventListener('online', () => syncAccount());
   const subjectName = subjectId => data.subjects.find(x => x.id === subjectId)?.name || 'General';
   const subjectColor = subjectId => data.subjects.find(x => x.id === subjectId)?.color || '#8b7cf6';
   function money(value) {
@@ -431,7 +465,7 @@ export function initPlanner(api, getAccount) {
   renderAll(); get('studyDate').value = appDate();
   async function setAccount(account, options = {}) {
     const nextUser = account?.user?.id || null;
-    if (options.signedOut) { localStorage.removeItem(LAST_USER_KEY); activeUser = null; }
+    if (options.signedOut) { localStorage.removeItem(LAST_USER_KEY); activeUser = null; clearTimeout(syncTimer); }
     else if (!nextUser && activeUser && !navigator.onLine) {
       get('plannerSync').textContent = 'Saved offline · will sync when online'; renderAll(); return;
     } else if (!nextUser && navigator.onLine) { localStorage.removeItem(LAST_USER_KEY); activeUser = null; }
@@ -439,7 +473,7 @@ export function initPlanner(api, getAccount) {
     personalization = null;
     if (!activeUser) {
       try { data = { ...defaultData(), ...JSON.parse(localStorage.getItem(STORE_KEY) || '{}') }; } catch { data = defaultData(); }
-      get('plannerSync').textContent = 'Saved on this device · sign in to sync'; renderAll(); return;
+      clearTimeout(syncTimer); get('plannerSync').textContent = 'Saved on this device · sign in to sync'; renderAll(); return;
     }
     const userKey = userStoreKey(activeUser), isDirty = Boolean(localStorage.getItem(pendingKey(activeUser)));
     let local = null; try { local = JSON.parse(localStorage.getItem(userKey) || 'null'); } catch {}
@@ -447,21 +481,23 @@ export function initPlanner(api, getAccount) {
     if (isDirty) {
       get('plannerSync').textContent = 'Saved offline · syncing your changes'; renderAll();
       if (navigator.onLine) await flushPendingSync();
-      checkReminders(); return;
+      checkReminders(); scheduleSync(); return;
     }
     if (!navigator.onLine) {
-      get('plannerSync').textContent = 'Saved offline · will sync when online'; renderAll(); return;
+      get('plannerSync').textContent = 'Saved offline · will sync when online'; renderAll(); scheduleSync(); return;
     }
     try {
       const result = await api('/api/planner'); personalization = result.personalization || null;
       data = result.data ? { ...defaultData(), ...result.data } : (local || data);
+      localStorage.setItem(lastSyncKey(activeUser), String(Date.now()));
       if (!result.data) { localStorage.setItem(pendingKey(activeUser), String(Date.now())); await flushPendingSync(); }
       if (personalization?.copy && !data.settings.notificationCopy) data.settings.notificationCopy = personalization.copy;
-      get('plannerSync').textContent = 'Synced to your account';
+      get('plannerSync').textContent = 'Synced to your account · next sync in 3 hours';
     } catch {
       data = local || data; get('plannerSync').textContent = 'Saved offline · will sync when online';
+      localStorage.setItem(lastSyncKey(activeUser), String(Date.now()));
     }
-    data.settings = { ...defaultData().settings, ...(data.settings || {}) }; saveLocal(); renderAll(); checkReminders();
+    data.settings = { ...defaultData().settings, ...(data.settings || {}) }; saveLocal(); renderAll(); checkReminders(); scheduleSync();
   }
   function setPersonalization(value) { personalization = value || null; }
   function getScheduleTemplate(date) { return plannedOn(date).map(({ id: oldId, ...item }) => ({ ...item, id: id() })); }

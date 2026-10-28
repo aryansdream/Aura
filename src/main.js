@@ -36,6 +36,7 @@ let account = null;
 let pending = 0;
 let verifiedHistory = [];
 let periodMode = 'month';
+const ACCOUNT_CACHE_KEY = 'aura_account_snapshot_v1';
 const localPeriodNow = new Date();
 $('periodDate').value = `${localPeriodNow.getFullYear()}-${String(localPeriodNow.getMonth() + 1).padStart(2, '0')}`;
 $('periodYear').value = localPeriodNow.getFullYear();
@@ -72,7 +73,7 @@ const api = async (url, body) => {
   const response = await fetch(url, {
     method: body === undefined ? 'GET' : 'POST',
     credentials: 'same-origin',
-    headers: { 'x-aura-time-zone': Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC', ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+    headers: { 'x-aura-time-zone': Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC', ...(window.AURA_DESKTOP_KEY ? { 'x-aura-local-key': window.AURA_DESKTOP_KEY } : {}), ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
     body: body === undefined ? undefined : JSON.stringify(body),
     cache: 'no-store'
   });
@@ -156,12 +157,11 @@ function startDeviceSync() {
   clearInterval(deviceHeartbeatTimer);
   if (account?.user?.id) {
     reportDevice();
-    deviceHeartbeatTimer = setInterval(reportDevice, 120000);
+    deviceHeartbeatTimer = setInterval(reportDevice, 3 * 60 * 60 * 1000);
   }
 }
-window.addEventListener('online', reportDevice);
+window.addEventListener('online', () => { if (viewFromHash() === 'devices') refreshDevices(); });
 window.addEventListener('hashchange', () => { if (viewFromHash() === 'devices') refreshDevices(); });
-window.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reportDevice(); });
 if (typeof navigator.getBattery === 'function') navigator.getBattery().then((battery) => {
   deviceBattery = battery;
   battery.addEventListener('levelchange', reportDevice);
@@ -171,7 +171,7 @@ deviceRefreshTimer = setInterval(() => { if (viewFromHash() === 'devices') refre
 const authCall = async (path, body = {}) => {
   const response = await fetch(`/api/auth/${path}`, {
     method: 'POST', credentials: 'same-origin',
-    headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
+    headers: { 'content-type': 'application/json', ...(window.AURA_DESKTOP_KEY ? { 'x-aura-local-key': window.AURA_DESKTOP_KEY } : {}) }, body: JSON.stringify(body)
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.message || data.error || 'Authentication could not be completed.');
@@ -244,7 +244,17 @@ async function syncFocusAwards() {
       const award = focusState.pendingAwards[index];
       const result = await api('/api/planner', { action: 'focus-point', ...award });
       focusState.pendingAwards.splice(index, 1);
-      state.total = Number(result.total ?? state.total); persistFocus(); reloadAccount();
+      state.total = Number(result.total ?? state.total);
+      state.todayFocus = Number(result.today ?? state.todayFocus);
+      const earnedDays = new Set(account?.days || []); earnedDays.add(award.date);
+      if (account) {
+        account.days = [...earnedDays];
+        account.stats = { ...account.stats, total: state.total, today: state.todayFocus };
+        state.streak = calculateStreak(account.days, today());
+        const cached = structuredClone(account); if (cached.profile) delete cached.profile.lanSyncKey;
+        localStorage.setItem(ACCOUNT_CACHE_KEY, JSON.stringify(cached));
+      }
+      save(); persistFocus(); renderPeriodTracker();
     }
   } catch (error) {
     if (error.status >= 400 && error.status < 500 && error.status !== 401 && error.status !== 429) {
@@ -454,6 +464,11 @@ $('periodDate').addEventListener('change', renderPeriodTracker);
 $('periodYear').addEventListener('change', renderPeriodTracker);
 function showAccount(data, options = {}) {
   account = data;
+  if (data) {
+    const cached = structuredClone(data);
+    if (cached.profile) delete cached.profile.lanSyncKey;
+    localStorage.setItem(ACCOUNT_CACHE_KEY, JSON.stringify(cached));
+  } else if (!options.offline) localStorage.removeItem(ACCOUNT_CACHE_KEY);
   setView(viewFromHash());
   startDeviceSync();
   planner.setAccount(data, options).then(() => { renderFocusSubjects(); syncFocusAwards(); });
@@ -465,7 +480,7 @@ function showAccount(data, options = {}) {
   $('authOpen').hidden = !!data;
   $('authOut').hidden = !data;
   $('displayName').disabled = false;
-  $('saveState').textContent = data ? 'Progress synced to your account' : 'Sign in to sync across devices';
+  $('saveState').textContent = data ? (options.offline ? 'Offline · changes saved on this device' : 'Progress synced to your account') : 'Sign in to sync across devices';
   if (!data) { refreshLeaderboard(); return; }
   state.name = data.profile.display_name;
   state.total = Number(data.stats.total || 0);
@@ -497,7 +512,15 @@ async function reloadAccount() {
   try { showAccount(await api('/api/me')); syncFocusAwards(); return true; }
   catch (error) {
     if (error.message === 'Sign in to sync your progress.') showAccount(null);
-    else { $('authState').textContent = 'Sync unavailable'; $('saveState').textContent = 'Could not reach AURA sync'; }
+    else {
+      let cached = null;
+      try { cached = JSON.parse(localStorage.getItem(ACCOUNT_CACHE_KEY) || 'null'); } catch {}
+      if (cached?.user?.id) {
+        showAccount(cached, { offline: true });
+        $('authState').textContent = 'Offline mode';
+        $('saveState').textContent = 'Your planner is saved on this PC. Account sync resumes when connected.';
+      } else { $('authState').textContent = 'Sync unavailable'; $('saveState').textContent = 'Could not reach AURA sync'; }
+    }
     return false;
   }
 }

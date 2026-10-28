@@ -3,6 +3,7 @@ const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
+const http = require('node:http');
 const dgram = require('node:dgram');
 const net = require('node:net');
 const { execFile } = require('node:child_process');
@@ -31,6 +32,9 @@ let settings = { clipboard: false, mediaDetection: false };
 let screenCaptureArmed = false;
 let screenCaptureActive = false;
 let ocrWorkerPromise = null;
+let dashboardServer = null;
+let dashboardToken = '';
+const DASHBOARD_PORT = 43187;
 const deviceId = loadDeviceId();
 
 function userFile(name) { return path.join(app.getPath('userData'), name); }
@@ -375,6 +379,62 @@ async function refreshAccount() {
   account.stats.streak = streakFromDays(account.days);
   saveAccount(); stopLan(); startLan(); emitState(); return true;
 }
+function dashboardRoot() {
+  return app.isPackaged ? path.join(process.resourcesPath, 'web') : path.resolve(__dirname, '../../dist');
+}
+function dashboardMime(file) {
+  return ({ '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json', '.apk': 'application/vnd.android.package-archive', '.woff2': 'font/woff2' })[path.extname(file).toLowerCase()] || 'application/octet-stream';
+}
+function startDashboardServer() {
+  if (dashboardServer?.listening) return Promise.resolve(`http://127.0.0.1:${DASHBOARD_PORT}`);
+  dashboardToken = crypto.randomBytes(32).toString('hex');
+  const root = dashboardRoot();
+  dashboardServer = http.createServer(async (req, res) => {
+    try {
+      const requestUrl = new globalThis.URL(req.url, `http://127.0.0.1:${DASHBOARD_PORT}`);
+      if (requestUrl.pathname.startsWith('/api/')) {
+        if (!['GET', 'POST'].includes(req.method)) { res.writeHead(405).end(); return; }
+        if (req.headers['x-aura-local-key'] !== dashboardToken || (req.headers.origin && req.headers.origin !== `http://127.0.0.1:${DASHBOARD_PORT}`)) { res.writeHead(403).end(); return; }
+        const chunks = []; let size = 0;
+        for await (const chunk of req) { size += chunk.length; if (size > 1024 * 1024) { res.writeHead(413).end(); return; } chunks.push(chunk); }
+        const body = Buffer.concat(chunks);
+        const upstream = await session.fromPartition(PARTITION).fetch(`${URL}${requestUrl.pathname}${requestUrl.search}`, {
+          method: req.method, credentials: 'include', cache: 'no-store',
+          headers: { origin: URL, ...(req.headers['content-type'] ? { 'content-type': req.headers['content-type'] } : {}), ...(req.headers['x-aura-time-zone'] ? { 'x-aura-time-zone': req.headers['x-aura-time-zone'] } : {}) },
+          ...(req.method === 'POST' ? { body } : {})
+        });
+        const bytes = Buffer.from(await upstream.arrayBuffer());
+        res.writeHead(upstream.status, { 'content-type': upstream.headers.get('content-type') || 'application/json; charset=utf-8', 'cache-control': 'no-store', 'content-length': bytes.length });
+        res.end(bytes); return;
+      }
+      const relative = decodeURIComponent(requestUrl.pathname).replace(/^\/+/, '') || 'index.html';
+      if (relative.includes('\\') || relative.split('/').includes('..')) { res.writeHead(400).end(); return; }
+      let file = path.join(root, relative);
+      if (!file.startsWith(`${root}${path.sep}`)) { res.writeHead(400).end(); return; }
+      if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
+        if (!path.extname(relative)) file = path.join(root, 'index.html');
+        else { res.writeHead(404).end('Not found'); return; }
+      }
+      if (path.basename(file) === 'index.html') {
+        const html = fs.readFileSync(file, 'utf8').replace('</head>', `<script>window.AURA_DESKTOP_KEY=${JSON.stringify(dashboardToken)};</script></head>`);
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' }); res.end(html); return;
+      }
+      res.writeHead(200, { 'content-type': dashboardMime(file), 'cache-control': path.extname(file) === '.html' ? 'no-cache' : 'public, max-age=3600' });
+      fs.createReadStream(file).pipe(res);
+    } catch {
+      if (!res.headersSent) res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Aura Sync could not reach the account service. Your local planner data remains on this PC.' }));
+    }
+  });
+  return new Promise((resolve, reject) => {
+    dashboardServer.once('error', reject);
+    dashboardServer.listen(DASHBOARD_PORT, '127.0.0.1', () => {
+      dashboardServer.removeListener('error', reject);
+      session.fromPartition(PARTITION).setPermissionRequestHandler((_webContents, permission, callback) => callback(permission === 'notifications'));
+      resolve(`http://127.0.0.1:${DASHBOARD_PORT}`);
+    });
+  });
+}
 async function pollMedia() {
   if (!settings.mediaDetection) return;
   try {
@@ -425,10 +485,15 @@ setInterval(() => {
   if (value === ignoredClipboard) { ignoredClipboard = ''; return; }
   broadcast({ kind: 'clipboard', text: value, clipAt: Date.now(), origin: deviceId });
 }, 700);
-app.on('before-quit', () => { try { ocrWorkerPromise?.then(worker => worker.terminate()).catch(() => {}); } catch {} });
+app.on('before-quit', () => { try { ocrWorkerPromise?.then(worker => worker.terminate()).catch(() => {}); } catch {} try { dashboardServer?.close(); } catch {} });
 app.on('window-all-closed', () => { screenCaptureActive = false; stopLan(); app.quit(); });
 ipcMain.handle('state', () => ({ connected: !!account, accountName: account?.name || '', accountId: account?.accountId || '', devices: [...peers.values()], media: mediaEvents, settings, points: account?.stats?.total ?? null, streak: account?.stats?.streak ?? null, focus: hasActiveFocus() }));
-ipcMain.handle('open-dashboard', () => { const w = new BrowserWindow({ width: 1200, height: 850, parent: win, webPreferences: { partition: PARTITION, contextIsolation: true, nodeIntegration: false, sandbox: true } }); w.loadURL(URL); });
+ipcMain.handle('open-dashboard', async () => {
+  const dashboardUrl = await startDashboardServer();
+  const w = new BrowserWindow({ width: 1200, height: 850, minWidth: 800, minHeight: 600, parent: win, title: 'AURA — Daily planner & study tracker', webPreferences: { partition: PARTITION, contextIsolation: true, nodeIntegration: false, sandbox: true } });
+  w.loadURL(dashboardUrl);
+  return true;
+});
 ipcMain.handle('sign-in', async (_event, credentials) => {
   const email = String(credentials?.email || '').trim().slice(0, 254);
   const password = String(credentials?.password || '');

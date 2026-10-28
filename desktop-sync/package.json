@@ -17,9 +17,13 @@
       "src/**/*",
       "package.json"
     ],
+    "extraResources": [
+      { "from": "../dist", "to": "web", "filter": ["**/*", "!**/*.apk"] }
+    ],
     "asarUnpack": [
       "node_modules/tesseract.js/**",
       "node_modules/tesseract.js-core/**",
+      "node_modules/regenerator-runtime/**",
       "node_modules/@tesseract.js-data/eng/**"
     ],
     "linux": {
