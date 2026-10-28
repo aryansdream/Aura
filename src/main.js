@@ -50,7 +50,11 @@ function setView(view) {
   $('homeView').hidden = topLevel;
   $('leaderboardView').hidden = view !== 'leaderboard';
   $('infoView').hidden = view !== 'info';
-  document.querySelectorAll('[data-page]').forEach(section => { section.hidden = !section.dataset.page.split(/\s+/).includes(view); });
+  document.querySelectorAll('[data-page]').forEach(section => {
+    const matchesView = section.dataset.page.split(/\s+/).includes(view);
+    const needsAccount = section.dataset.requiresAccount === 'true';
+    section.hidden = !matchesView || (needsAccount && !account?.user?.id);
+  });
   document.querySelectorAll('.view-tab').forEach((button) => {
     const active = button.dataset.view === view;
     button.classList.toggle('active', active);
@@ -448,59 +452,9 @@ document.querySelectorAll('[data-period]').forEach(button => button.addEventList
 }));
 $('periodDate').addEventListener('change', renderPeriodTracker);
 $('periodYear').addEventListener('change', renderPeriodTracker);
-function appDatePlus(days) {
-  const date = new Date(); date.setHours(date.getHours() - 2); date.setDate(date.getDate() + days);
-  const datePart = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-  return `${datePart}T09:00`;
-}
-let tomorrowTemplate = [];
-function planRows(rows, readonly = false) {
-  $('tomorrowScheduleRows').innerHTML = rows.map((item, index) => `<div class="tomorrow-schedule-row${readonly ? ' is-template' : ''}" data-subject-id="${escapeHtml(item.subjectId || '')}" data-kind="${escapeHtml(item.kind || 'Personal')}"><input class="field" data-plan-title value="${escapeHtml(item.title || '')}" placeholder="Class, study, or activity" aria-label="Activity ${index + 1}" ${readonly ? 'readonly' : 'required'}><input class="field" data-plan-start type="time" value="${escapeHtml(item.start || '')}" aria-label="Start time" ${readonly ? 'readonly' : 'required'}><input class="field" data-plan-end type="time" value="${escapeHtml(item.end || '')}" aria-label="End time" ${readonly ? 'readonly' : 'required'}><button class="icon-button" type="button" data-plan-remove aria-label="Remove activity" ${readonly ? 'hidden' : ''}>×</button></div>`).join('');
-  $('tomorrowAddRow').hidden = readonly;
-}
-function showTomorrowPlan() {
-  if (!account?.user?.id || window.AURA_FOCUS_ACTIVE || $('tomorrowPlanDialog').open) return;
-  const day = today(), user = account.user.id, savedKey = `aura_tomorrow_schedule_saved_${user}`;
-  const sessionKey = `aura_tomorrow_schedule_later_${user}_${day}`;
-  if (localStorage.getItem(savedKey) === day || sessionStorage.getItem(sessionKey) === day) return;
-  if (document.querySelector('dialog[open]')) return window.setTimeout(showTomorrowPlan, 1200);
-  const tomorrowDate = appDatePlus(1).slice(0, 10), lastWeek = new Date(`${tomorrowDate}T12:00:00`); lastWeek.setDate(lastWeek.getDate() - 7);
-  const lastWeekDate = `${lastWeek.getFullYear()}-${String(lastWeek.getMonth() + 1).padStart(2, '0')}-${String(lastWeek.getDate()).padStart(2, '0')}`;
-  tomorrowTemplate = planner.getScheduleTemplate(lastWeekDate);
-  $('tomorrowPlanMode').value = 'same';
-  planRows(tomorrowTemplate, true);
-  $('tomorrowPlanDialog').showModal();
-}
-$('tomorrowPlanMode').addEventListener('change', () => {
-  const mode = $('tomorrowPlanMode').value;
-  planRows(mode === 'new' ? [{ title: '', start: '', end: '', kind: 'Personal' }] : tomorrowTemplate, mode === 'same');
-});
-$('tomorrowAddRow').addEventListener('click', () => {
-  const rows = [...$('tomorrowScheduleRows').querySelectorAll('.tomorrow-schedule-row')].map(row => ({ title: row.querySelector('[data-plan-title]').value, start: row.querySelector('[data-plan-start]').value, end: row.querySelector('[data-plan-end]').value, subjectId: row.dataset.subjectId || '', kind: row.dataset.kind || 'Personal' }));
-  rows.push({ title: '', start: '', end: '', kind: 'Personal' }); planRows(rows, false);
-});
-$('tomorrowScheduleRows').addEventListener('click', event => {
-  if (!event.target.closest('[data-plan-remove]')) return;
-  const row = event.target.closest('.tomorrow-schedule-row'); row.remove();
-  if (!$('tomorrowScheduleRows').children.length) planRows([{ title: '', start: '', end: '', kind: 'Personal' }], false);
-});
-$('tomorrowPlanLater').addEventListener('click', () => {
-  if (account?.user?.id) sessionStorage.setItem(`aura_tomorrow_schedule_later_${account.user.id}_${today()}`, today());
-  $('tomorrowPlanDialog').close();
-});
-$('tomorrowPlanForm').addEventListener('submit', event => {
-  event.preventDefault();
-  const mode = $('tomorrowPlanMode').value;
-  const rows = [...$('tomorrowScheduleRows').querySelectorAll('.tomorrow-schedule-row')].map(row => ({ title: row.querySelector('[data-plan-title]').value.trim(), start: row.querySelector('[data-plan-start]').value, end: row.querySelector('[data-plan-end]').value, subjectId: row.dataset.subjectId || '', kind: row.dataset.kind || 'Personal' }));
-  if (mode !== 'same' && (!rows.length || rows.some(item => !item.title || !item.start || !item.end || item.end <= item.start))) return toast('Add at least one activity with a valid start and end time.');
-  const tomorrowDate = appDatePlus(1).slice(0, 10);
-  planner.addOneOffActivities(tomorrowDate, mode === 'same' ? tomorrowTemplate : rows, true);
-  localStorage.setItem(`aura_tomorrow_schedule_saved_${account.user.id}`, today());
-  $('tomorrowPlanDialog').close(); toast('Tomorrow’s timetable is ready');
-});
-
 function showAccount(data, options = {}) {
   account = data;
+  setView(viewFromHash());
   startDeviceSync();
   planner.setAccount(data, options).then(() => { renderFocusSubjects(); syncFocusAwards(); });
   verifiedHistory = data?.history || [];
@@ -521,7 +475,6 @@ function showAccount(data, options = {}) {
   $('displayName').value = state.name;
   save();
   refreshLeaderboard();
-  window.setTimeout(showTomorrowPlan, 400);
 }
 function calculateStreak(days, currentDay) {
   const earnedDays = new Set((Array.isArray(days) ? days : []).filter(day => /^\d{4}-\d{2}-\d{2}$/.test(day)));
