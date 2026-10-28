@@ -416,7 +416,7 @@ function startDashboardServer() {
         else { res.writeHead(404).end('Not found'); return; }
       }
       if (path.basename(file) === 'index.html') {
-        const desktopStyle = '<style>#homeInstallPanel,.home-install-panel,.sync-downloads,.release-archive{display:none!important}</style>';
+        const desktopStyle = '<style>#homeInstallPanel,.home-install-panel,.sync-downloads,.release-archive,#appInstallShortcut,.app-install-shortcut,#appInstallDialog{display:none!important}</style>';
         const desktopBoot = `<link rel="stylesheet" href="/src/planner.css"><script>window.AURA_DESKTOP_KEY=${JSON.stringify(dashboardToken)};</script>`;
         const html = fs.readFileSync(file, 'utf8').replace('</head>', `${desktopStyle}${desktopBoot}</head>`);
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' }); res.end(html); return;
