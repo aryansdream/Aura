@@ -1,0 +1,6 @@
+.git
+.vercel
+node_modules
+desktop-sync
+android-native
+dist
